@@ -159,7 +159,7 @@ sequenceDiagram
 ```json
 {
   "user_id": "usr_98765",
-  "message_type": "TEXT" | "AUDIO" | "VIDEO" | "FILE",
+  "message_type": "TEXT | AUDIO | VIDEO | PICTURE",
   "text_content": "hello",
   "media_id": "med_abc890_m4a"
 }
