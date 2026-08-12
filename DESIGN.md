@@ -272,3 +272,7 @@ Stacked, modular widgets providing high-level operational metrics and content di
    * Real-time metrics and active listener response breakdowns for ongoing show polls.
 3. **Topic Search & Smart Filters:**
    * Instant search and taxonomy filters to isolate specific keywords, trending topics, or flagged messages across the stream.
+
+## 5. Resources & References
+
+* **Primary Specification:** [`Developer Opdracht_App-berichten.pdf`](https://www.google.com/search?q=assets/Developer%2520Opdracht_%2520App-berichten.pdf)
