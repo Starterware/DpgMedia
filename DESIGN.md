@@ -3,14 +3,19 @@
 ## 1. Background
 Our radio stations maintain constant engagement with listeners via mobile apps. Listeners send text, photos, audio, and video clips live during broadcasts. DJs operate in a fast-paced environment where they must consume incoming listener content at a glance without disrupting their on-air workflow.
 
-## 2. Problem Statement
-* **Information Overload**: High-volume shows generate thousands of concurrent messages, making it impossible for DJs to read every text or listen to/watch every media submission.
+## 2. Assumptions
+* **User Database & Authentication:** An existing centralized User Database / Identity Provider manages listener profiles, accounts, and session tokens. The ingestion service will validate token claims without managing user identity directly.
+
+* **Station / Show Context:** Mobile applications send current station and show identifiers alongside incoming payloads to route content correctly.
+
+## 3. Problem Statement
+* **Information Overload**: High-volume shows generate massive spikes in concurrent message submissions, making it impossible for DJs to read every text or listen to/watch every media submission.
 
 * **Media Latency**: Audio and video clips contain valuable on-air content but create playback bottlenecks. Speech-to-text (STT) models (e.g., Whisper) add processing delay.
 
-* **Message Prioritization**: DJs need immediate visibility into high-value messages (top fans, ...) and quick macro-level context (trending topics, active polls) alongside the live chat stream.
+* **Message Aggregation:** DJs need immediate visibility into high-value text/media submissions and quick macro-level context (trending topics, AI live summaries) alongside the live chat stream.
 
-## 3. Solutions Considered
+## 4. Solutions Considered
 
 ### Solution 1: Synchronous Monolith with Inline Media Processing
 
@@ -27,7 +32,7 @@ Our radio stations maintain constant engagement with listeners via mobile apps. 
 
 ### Solution 2: Direct Client-Side Transcription & Edge Processing
 
-**Concept:** Offload STT transcription and video processing directly to listener mobile devices prior to API upload.
+**Concept:** Offload Speech-to-Text transcription and video processing directly to listener mobile devices prior to API upload.
 
 **Benefits:**
 * Lower server-side compute and transcription costs
@@ -64,7 +69,7 @@ Our radio stations maintain constant engagement with listeners via mobile apps. 
 **Drawbacks:**
 * Higher architectural complexity
   
-## 4. High Level Design
+## 5. High Level Design
 
 ### A. Mobile App Flow (User Interface)
 
@@ -185,8 +190,10 @@ flowchart TD
     App["Mobile App"]
 
     API["REST API"]
-    Broker[("Message Broker / Event Bus")]
+    UserDB[("User Database / Auth")]
     DB[("NoSQL Database (7-Day TTL)")]
+    CDC["DB Stream / CDC Handler"]
+    Broker[("Event Bus")]
 
     STT["Speech-to-Text Worker"]
     LLM_Sum["AI Summary Aggregator"]
@@ -194,13 +201,15 @@ flowchart TD
     DJ["DJ Dashboard"]
 
     App -->|"Send Text / Upload Media"| API
-    API -->|"Publish Event"| Broker
-    API -->|"Save Raw Record"| DB
+    API <-->|"Validate Identity"| UserDB
+    API -->|"1. Save Record First"| DB
+
+    DB -->|"2. Trigger Stream Event"| CDC
+    CDC -->|"3. Publish Event"| Broker
 
     Broker -->|"Audio / Video Jobs"| STT
     
     STT -->|"Save Transcript"| DB
-    STT -->|"Publish Event"| Broker
 
     LLM_Sum <-->|"Read 5-Min Window"| DB
     LLM_Sum -->|"Publish Summary Event"| Broker
@@ -215,23 +224,25 @@ flowchart TD
     %% Class Assignments
     class App yellowNode;
     class DJ blueNode;
-    class API,Broker,DB,STT,LLM_Sum defaultNode;
+    class API,UserDB,DB,CDC,Broker,STT,LLM_Sum defaultNode;
 ```
 
 | Component | Architecture Role | Execution Model |
 | --- | --- | --- |
 | **REST API** | Accepts incoming text payloads and handles presigned URL generation for binary uploads (audio/video). | Synchronous HTTP |
-| **Message Broker / Event Bus** | Real-time event backbone distributing jobs to worker queues and streaming events to connected client sessions. | Async Pub/Sub & Queueing |
+| **Event Bus** | Real-time event backbone distributing jobs to worker queues and streaming events to connected client sessions. | Async Pub/Sub & Queueing |
 | **Speech-to-Text Worker** | Transcribes incoming audio and video files using speech recognition models (e.g., Whisper). | Asynchronous Queue Consumer |
 | **AI Summary Aggregator** | Heavy-context LLM that reads the rolling 5-minute message window to generate macro-level narrative summaries for the DJ. | Batch / Scheduled (Cron) |
-| **NoSQL Database** | Persistent datastore storing raw messages, enriched transcripts, and generated summaries (enforces a 7-Day TTL). | Document / Key-Value |
+| **NoSQL Database** | Persistent datastore storing raw messages, enriched transcripts, and generated summaries (enforces a 7-Day TTL). | Persistent TCP / Database Driver (RPC) |
+| **User Database / Auth** |	External identity service validating listener session tokens and user metadata. | Direct RPC / Auth Middleware |
+| **DJ Dashboard** |	Live UI consumed by DJs/producers to view streamed messages, transcripts, waveforms, and summaries in real time.	| Persistent WebSocket Client (Event-Driven) |
 
 #### Redis Pub/Sub & WebSocket Service Architecture
 
-Using **Redis** as the real-time message broker decoupling backend workers and ingestion APIs from front-end WebSocket state:
+Using Redis as the real-time event bus decoupling backend database processing from front-end WebSocket state:
 
 1. **Pub/Sub Channels:** Backend components publish events directly to designated Redis channels:
-  * `chat:events:stream` — Real-time listener messages, audio/video uploads, and STT transcripts.
+  * `chat:events:stream` — Real-time listener messages, audio/video uploads, and Speech-to-Text transcripts.
   * `chat:events:summary` — Rolling 5-minute global narrative updates generated by the AI Summary Aggregator.
 2. **WebSocket Gateway Cluster:** Horizontal WebSocket nodes subscribe to Redis Pub/Sub channels and instantly fan out events to connected DJ Dashboard clients.
 3. **Transient Message Cache:** Redis holds a ring-buffer of recent messages for instant state recovery if a DJ Dashboard reloads or re-establishes a WebSocket connection.
@@ -256,7 +267,6 @@ A real-time listener feed engineered for rapid studio scanning and instant live-
 
 * **Listener Messages & Profiles:** Displays listener avatars alongside truncated message previews (could be the translated text or the AI-generated summary) to maximize screen real estate.
   * **Expandable Content:** Includes a "More" button to expand the full message.
-  * **VIP Highlighting:** Priority visually highlights messages from VIP listeners or top contributors.
 * **Rich Inline Media:**
   * **Photos:** Displayed directly within the chat stream.
   * **Audio Messages:** Rendered inline with an interactive waveform to play the message.
@@ -266,13 +276,11 @@ A real-time listener feed engineered for rapid studio scanning and instant live-
 #### Right Panel: Real-Time Show Insights
 Stacked, modular widgets providing high-level operational metrics and content discovery tools for the producer and DJ.
 
-1. **AI Live Summary (Rolling 5-Min Window):**
+* **AI Live Summary (Rolling 5-Min Window):**
    * An auto-generated, rolling narrative summarizing recent chat activity and on-air discussion. Refreshes continuously so producers can catch up at a single glance.
-2. **Live Poll Results:**
-   * Real-time metrics and active listener response breakdowns for ongoing show polls.
-3. **Topic Search & Smart Filters:**
+* **Topic Search & Smart Filters:**
    * Instant search and taxonomy filters to isolate specific keywords, trending topics, or flagged messages across the stream.
 
-## 5. Resources & References
+## 6. Resources & References
 
-* **Primary Specification:** [`Developer Opdracht_App-berichten.pdf`](https://www.google.com/search?q=assets/Developer%2520Opdracht_%2520App-berichten.pdf)
+* **Primary Specification:** [`Developer Opdracht_App-berichten.pdf`](assets/Developer%20Opdracht_%20App-berichten.pdf)
