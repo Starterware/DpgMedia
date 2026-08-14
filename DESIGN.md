@@ -192,8 +192,8 @@ flowchart TD
     API["REST API"]
     UserDB[("User Database / Auth")]
     DB[("NoSQL Database (7-Day TTL)")]
-    CDC["DB Stream / CDC Handler"]
-    Broker[("Event Bus")]
+    CDC["DB Stream"]
+    Broker@{ shape: das, label: "Event Bus" }
 
     STT["Speech-to-Text Worker"]
     LLM_Sum["AI Summary Aggregator"]
@@ -202,10 +202,10 @@ flowchart TD
 
     App -->|"Send Text / Upload Media"| API
     API <-->|"Validate Identity"| UserDB
-    API -->|"1. Save Record First"| DB
+    API -->|"Save Record First"| DB
 
-    DB -->|"2. Trigger Stream Event"| CDC
-    CDC -->|"3. Publish Event"| Broker
+    DB -->|"Trigger Stream Event"| CDC
+    CDC -->|"Publish Event"| Broker
 
     Broker -->|"Audio / Video Jobs"| STT
     
@@ -234,6 +234,7 @@ flowchart TD
 | **Speech-to-Text Worker** | Transcribes incoming audio and video files using speech recognition models (e.g., Whisper). | Asynchronous Queue Consumer |
 | **AI Summary Aggregator** | Heavy-context LLM that reads the rolling 5-minute message window to generate macro-level narrative summaries for the DJ. | Batch / Scheduled (Cron) |
 | **NoSQL Database** | Persistent datastore storing raw messages, enriched transcripts, and generated summaries (enforces a 7-Day TTL). | Persistent TCP / Database Driver (RPC) |
+| **DB Stream** |	Reads database transaction logs (e.g., DynamoDB Streams / Change Streams) to guarantee event dispatch for inserted records. |	Asynchronous Event Stream |
 | **User Database / Auth** |	External identity service validating listener session tokens and user metadata. | Direct RPC / Auth Middleware |
 | **DJ Dashboard** |	Live UI consumed by DJs/producers to view streamed messages, transcripts, waveforms, and summaries in real time.	| Persistent WebSocket Client (Event-Driven) |
 
