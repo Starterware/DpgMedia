@@ -174,10 +174,10 @@ sequenceDiagram
 
 ```json
 {
-  "message_id": "msg_99887766",
-  "status": "RECEIVED",
-  "media_id": "med_abc890_m4a",
-  "created_at": 1786283437
+  "data": {
+    "message_id": "msg_0b7c1f2e-4f83-4a1a-9c2b-3f7f6e5d4c3b",
+    "created_at": "2026-08-17T14:54:49Z"
+  }
 }
 ```
 

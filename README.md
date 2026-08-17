@@ -1,2 +1,173 @@
-# DpgMedia
-Real-Time Listener Interaction Platform
+# DPG Media — Real-Time Listener Interaction Platform
+
+Listeners send text, photos, audio and video to a live radio show from a mobile app; DJs consume that
+stream at a glance from a studio dashboard. This repository contains the architecture design for that
+platform, plus a small Go server that implements the message ingestion endpoint from the design.
+
+## Design document
+
+The assignment was the architecture design, so the main deliverable is
+[`DESIGN.md`](DESIGN.md) — and within it **section [5. High Level Design](DESIGN.md#5-high-level-design)**
+is the part that answers the brief. It covers:
+
+* **A. Mobile App Flow** — conceptual chat UI, the upload/send sequence diagram, and the API schemas.
+* **B. Backend & Storage Architecture** — component diagram, the role and execution model of each
+  component, the Redis Pub/Sub + WebSocket fan-out, and the NoSQL schema.
+* **C. Studio & DJ Dashboard Layout** — the live chat panel and the real-time insights panel.
+
+Sections 1–4 lead up to it (background, assumptions, problem statement, and the alternative solutions
+that were considered and rejected), and section 6 links the original specification.
+
+## What the code implements
+
+The Go server is a demonstration of the ingestion slice of the design, not the full platform:
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /healthz` | Liveness check. |
+| `POST /api/v1/messages` | Accepts and validates a listener message, returns a generated `message_id`. |
+
+It also includes structured `slog` logging with a per-request ID, request body size limits,
+configuration via flags/environment variables, and graceful shutdown.
+
+## Requirements
+
+* Go 1.26.5 or newer (see [`go.mod`](go.mod))
+
+## Build and run
+
+Run directly:
+
+```bash
+go run ./cmd/server
+```
+
+Or build a binary first:
+
+```bash
+go build -o bin/server ./cmd/server
+./bin/server
+```
+
+The server listens on port `8080` by default and logs JSON to stdout. Press `Ctrl+C` to trigger a
+graceful shutdown that drains in-flight connections.
+
+### Configuration
+
+Every setting can be provided as a flag or an environment variable; the flag wins when both are set.
+Run `./bin/server -help` for the full list.
+
+| Flag | Environment variable | Default | Description |
+| --- | --- | --- | --- |
+| `-env` | `APP_ENV` | `development` | Application environment. |
+| `-port` | `PORT` | `8080` | HTTP server port. |
+| `-server-read-header-timeout` | `SERVER_READ_HEADER_TIMEOUT` | `5s` | Read header timeout. |
+| `-server-read-timeout` | `SERVER_READ_TIMEOUT` | `15s` | Read timeout. |
+| `-server-write-timeout` | `SERVER_WRITE_TIMEOUT` | `15s` | Write timeout. |
+| `-server-idle-timeout` | `SERVER_IDLE_TIMEOUT` | `120s` | Idle timeout. |
+| `-server-shutdown-timeout` | `SERVER_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown drain timeout. |
+| `-server-max-body-bytes` | `SERVER_MAX_BODY_BYTES` | `32768` | Maximum accepted request body size. |
+| `-log-level` | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
+| `-log-format` | `LOG_FORMAT` | `json` | `json` or `text`. |
+
+Example:
+
+```bash
+PORT=9000 LOG_LEVEL=debug go run ./cmd/server
+# or
+go run ./cmd/server -port 9000 -log-level debug -log-format text
+```
+
+Invalid configuration fails fast at startup with an explanatory error and exit code `2`.
+
+## Trying it out
+
+```bash
+curl localhost:8080/healthz
+```
+
+```json
+{"status":"ok"}
+```
+
+Send a text message:
+
+```bash
+curl -X POST localhost:8080/api/v1/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id":"usr_98765","message_type":"TEXT","text_content":"hello"}'
+```
+
+```json
+{
+  "data": {
+    "message_id": "msg_36f05099-e55c-4df1-b266-1adbed8bcd67",
+    "created_at": "2026-08-17T14:54:49Z"
+  }
+}
+```
+
+Failures use the error envelope:
+
+```bash
+curl -X POST localhost:8080/api/v1/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"message_type":"TEXT"}'
+```
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Validation error",
+    "details": [
+      {
+        "field": "user_id",
+        "issue": "REQUIRED",
+        "description": "Required field"
+      },
+      {
+        "field": "text_content",
+        "issue": "REQUIRED",
+        "description": "Required field for message_type TEXT"
+      }
+    ],
+    "timestamp": "2026-08-17T14:54:49Z",
+    "request_id": "req_8f92a10c"
+  }
+}
+```
+
+## Testing
+
+The tests are plain `go test` and use [testify](https://github.com/stretchr/testify); they need no
+running server or external services.
+
+```bash
+go test ./...              # run everything
+go test -race ./...        # with the race detector
+go test -cover ./...       # with coverage
+go test -v ./internal/api  # a single package, verbosely
+```
+
+## Current limitations
+
+The code is a slice of the design, deliberately kept small. Compared to `DESIGN.md` it does not
+(yet) include:
+
+* **No persistence.** Messages are validated, logged and acknowledged, but nothing is written to a
+  database. The NoSQL store, its 7-day TTL and the DB stream from the design are not implemented, so
+  a `message_id` returned by the API cannot be read back.
+* **No media upload path.** `POST /api/v1/media/upload-url` and the presigned direct-to-object-storage
+  upload do not exist. A `media_id` on a message is accepted as an opaque string; ownership and
+  existence are never verified. The empty `data/media` directory is a placeholder.
+* **No authentication.** There is no token validation against the User Database / Identity Provider;
+  `user_id` is taken from the request body and trusted as-is. Do not expose this server publicly.
+* **No asynchronous pipeline.** No event bus, no Speech-to-Text worker, no AI summary aggregator —
+  nothing is processed after a message is accepted.
+* **No real-time delivery.** No Redis Pub/Sub, no WebSocket gateway and no DJ dashboard; accepted
+  messages are not pushed anywhere.
+* **No station/show context.** Messages carry no `station_id` or `show_id`, so they cannot be routed
+  to a specific broadcast.
+* **Single instance, no operational hardening.** No rate limiting, no metrics or tracing, no
+  container image or deployment manifests, and no CI pipeline.
