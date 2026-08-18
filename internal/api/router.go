@@ -16,10 +16,11 @@ func NewRouter(logger *slog.Logger, opts Options) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", handleHealth)
-	mux.Handle("POST /api/v1/messages", &messagesHandler{
+	mux.Handle("POST /api/v1/messages", &createMessageHandler{
 		maxBodyBytes: opts.MaxBodyBytes,
 		store:        opts.Store,
 	})
+	mux.Handle("GET /api/v1/messages", &listMessagesHandler{store: opts.Store})
 
 	return requestLogger(logger, mux)
 }

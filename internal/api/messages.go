@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,12 +28,12 @@ type createMessageData struct {
 	CreatedAt string `json:"created_at"`
 }
 
-type messagesHandler struct {
+type createMessageHandler struct {
 	maxBodyBytes int64
 	store        store.MessageStore
 }
 
-func (h *messagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *createMessageHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := loggerFrom(ctx)
 
@@ -85,7 +86,7 @@ func (h *messagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *messagesHandler) decode(w http.ResponseWriter, r *http.Request) (createMessageRequest, details) {
+func (h *createMessageHandler) decode(w http.ResponseWriter, r *http.Request) (createMessageRequest, details) {
 	var req createMessageRequest
 	var errs details
 
@@ -122,6 +123,102 @@ func (h *messagesHandler) decode(w http.ResponseWriter, r *http.Request) (create
 	req.MediaID = strings.TrimSpace(req.MediaID)
 
 	return req, nil
+}
+
+const (
+	defaultListLimit = 50
+	maxListLimit     = 200
+)
+
+type messageData struct {
+	MessageID   string       `json:"message_id"`
+	UserID      string       `json:"user_id"`
+	MessageType message.Type `json:"message_type"`
+	TextContent string       `json:"text_content,omitempty"`
+	MediaID     string       `json:"media_id,omitempty"`
+	CreatedAt   string       `json:"created_at"`
+	ExpiresAt   string       `json:"expires_at,omitempty"`
+}
+
+func newMessageData(msg message.Message) messageData {
+	data := messageData{
+		MessageID:   msg.ID,
+		UserID:      msg.UserID,
+		MessageType: msg.Type,
+		TextContent: msg.TextContent,
+		MediaID:     msg.MediaID,
+		CreatedAt:   msg.CreatedAt.Format(time.RFC3339),
+	}
+	if !msg.ExpiresAt.IsZero() {
+		data.ExpiresAt = msg.ExpiresAt.Format(time.RFC3339)
+	}
+	return data
+}
+
+type listMessagesData struct {
+	Messages []messageData `json:"messages"`
+	Meta     listMeta      `json:"meta"`
+}
+
+type listMeta struct {
+	Count int `json:"count"`
+	Limit int `json:"limit"`
+}
+
+type listMessagesHandler struct {
+	store store.MessageStore
+}
+
+func (h *listMessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := loggerFrom(ctx)
+
+	limit, errs := parseLimit(r.URL.Query().Get("limit"))
+	if len(errs) > 0 {
+		logger.Warn("rejected list request", slog.Any("details", errs))
+		writeError(ctx, w, errInvalidRequest, errs)
+		return
+	}
+
+	messages, err := h.store.List(ctx, limit)
+	if err != nil {
+		logger.Error("failed to list messages", slog.Int("limit", limit), slog.Any("error", err))
+		writeError(ctx, w, errInternal, nil)
+		return
+	}
+
+	data := listMessagesData{
+		Messages: make([]messageData, 0, len(messages)),
+		Meta:     listMeta{Count: len(messages), Limit: limit},
+	}
+	for _, msg := range messages {
+		data.Messages = append(data.Messages, newMessageData(msg))
+	}
+
+	logger.Debug("messages listed", slog.Int("limit", limit), slog.Int("count", data.Meta.Count))
+
+	writeSuccess(ctx, w, http.StatusOK, data)
+}
+
+func parseLimit(raw string) (int, details) {
+	var errs details
+
+	if strings.TrimSpace(raw) == "" {
+		return defaultListLimit, nil
+	}
+
+	limit, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		errs.add("limit", issueInvalid, fmt.Sprintf("Must be an integer between 1 and %d", maxListLimit))
+		return 0, errs
+	}
+
+	if limit < 1 || limit > maxListLimit {
+		errs.add("limit", issueInvalid, fmt.Sprintf("Must be between 1 and %d", maxListLimit))
+		return 0, errs
+	}
+
+	return limit, nil
 }
 
 func (r *createMessageRequest) validate() details {

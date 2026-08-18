@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,43 @@ func postTo(t *testing.T, router http.Handler, body string) *httptest.ResponseRe
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	return rec
+}
+
+func listFrom(t *testing.T, router http.Handler, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/messages"+query, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func seedMessages(t *testing.T, messages store.MessageStore, n int) []string {
+	t.Helper()
+
+	ids := make([]string, 0, n)
+	for i := range n {
+		msg, err := messages.Create(t.Context(), message.Message{
+			ID:          fmt.Sprintf("msg_%02d", i),
+			UserID:      "usr_98765",
+			Type:        message.TypeText,
+			TextContent: fmt.Sprintf("hello %d", i),
+		})
+		require.NoError(t, err)
+		ids = append(ids, msg.ID)
+	}
+
+	slices.Reverse(ids)
+	return ids
+}
+
+type storeFailure struct{ store.MessageStore }
+
+func (storeFailure) Create(context.Context, message.Message) (message.Message, error) {
+	return message.Message{}, errors.New("store unavailable")
+}
+
+func (storeFailure) List(context.Context, int) ([]message.Message, error) {
+	return nil, errors.New("store unavailable")
 }
 
 func TestCreateMessageAudio(t *testing.T) {
@@ -71,12 +109,6 @@ func TestCreateMessageIsStored(t *testing.T) {
 	assert.Equal(t, data.CreatedAt, stored.CreatedAt.Format(time.RFC3339),
 		"the stored record and the response report the same instant")
 	assert.Equal(t, stored.CreatedAt.Add(testStoreTTL), stored.ExpiresAt)
-}
-
-type storeFailure struct{ store.MessageStore }
-
-func (storeFailure) Create(context.Context, message.Message) (message.Message, error) {
-	return message.Message{}, errors.New("store unavailable")
 }
 
 func TestCreateMessageStoreFailure(t *testing.T) {
@@ -242,8 +274,141 @@ func TestErrorCarriesRequestID(t *testing.T) {
 	assert.Equal(t, "req_8f92a10c", body.RequestID)
 }
 
+func TestListMessages(t *testing.T) {
+	messages := newTestStore()
+	ids := seedMessages(t, messages, 3)
+
+	rec := listFrom(t, newTestRouterWithStore(messages), "")
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
+
+	data := decodeSuccess[listMessagesData](t, rec)
+	assert.Equal(t, listMeta{Count: 3, Limit: defaultListLimit}, data.Meta)
+
+	got := make([]string, 0, len(data.Messages))
+	for _, msg := range data.Messages {
+		got = append(got, msg.MessageID)
+	}
+	assert.Equal(t, ids, got, "messages are returned newest first")
+
+	newest := data.Messages[0]
+	assert.Equal(t, "usr_98765", newest.UserID)
+	assert.Equal(t, message.TypeText, newest.MessageType)
+	assert.Equal(t, "hello 2", newest.TextContent)
+	assert.Empty(t, newest.MediaID)
+
+	createdAt, err := time.Parse(time.RFC3339, newest.CreatedAt)
+	assert.NoError(t, err, "created_at = %q, want RFC 3339", newest.CreatedAt)
+
+	expiresAt, err := time.Parse(time.RFC3339, newest.ExpiresAt)
+	require.NoError(t, err, "expires_at = %q, want RFC 3339", newest.ExpiresAt)
+	assert.Equal(t, createdAt.Add(testStoreTTL), expiresAt)
+}
+
+func TestListMessagesContent(t *testing.T) {
+	messages := newTestStore()
+	seedMessages(t, messages, 1)
+
+	rec := listFrom(t, newTestRouterWithStore(messages), "")
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
+
+	msg := decodeSuccess[listMessagesData](t, rec).Messages[0]
+	assert.NotEmpty(t, msg.MessageID)
+	assert.Equal(t, "usr_98765", msg.UserID)
+	assert.Equal(t, message.TypeText, msg.MessageType)
+	assert.Equal(t, "hello 0", msg.TextContent)
+	assert.Empty(t, msg.MediaID)
+
+	_, err := time.Parse(time.RFC3339, msg.CreatedAt)
+	assert.NoError(t, err, "created_at = %q, want RFC 3339", msg.CreatedAt)
+}
+
+func TestListMessagesEmpty(t *testing.T) {
+	rec := listFrom(t, newTestRouter(), "")
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
+
+	assert.JSONEq(t, `{"data":{"messages":[],"meta":{"count":0,"limit":50}}}`, rec.Body.String(),
+		"an empty store must return an empty array, not null")
+}
+
+func TestListMessagesLimit(t *testing.T) {
+	messages := newTestStore()
+	ids := seedMessages(t, messages, 3)
+
+	rec := listFrom(t, newTestRouterWithStore(messages), "?limit=2")
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
+
+	data := decodeSuccess[listMessagesData](t, rec)
+	assert.Equal(t, listMeta{Count: 2, Limit: 2}, data.Meta)
+	require.Len(t, data.Messages, 2)
+	assert.Equal(t, ids[0], data.Messages[0].MessageID)
+	assert.Equal(t, ids[1], data.Messages[1].MessageID)
+}
+
+func TestListMessagesInvalidLimit(t *testing.T) {
+	tests := []struct {
+		name        string
+		query       string
+		wantLimit   int
+		wantDetails details
+	}{
+		{name: "absent", query: "", wantLimit: defaultListLimit},
+		{name: "empty", query: "?limit=", wantLimit: defaultListLimit},
+		{name: "blank", query: "?limit=%20", wantLimit: defaultListLimit},
+		{name: "padded", query: "?limit=%2010%20", wantLimit: 10},
+		{name: "maximum", query: fmt.Sprintf("?limit=%d", maxListLimit), wantLimit: maxListLimit},
+		{
+			name:  "not a number",
+			query: "?limit=many",
+			wantDetails: details{{Field: "limit", Issue: issueInvalid,
+				Description: fmt.Sprintf("Must be an integer between 1 and %d", maxListLimit)}},
+		},
+		{
+			name:  "zero",
+			query: "?limit=0",
+			wantDetails: details{{Field: "limit", Issue: issueInvalid,
+				Description: fmt.Sprintf("Must be between 1 and %d", maxListLimit)}},
+		},
+		{
+			name:  "negative",
+			query: "?limit=-1",
+			wantDetails: details{{Field: "limit", Issue: issueInvalid,
+				Description: fmt.Sprintf("Must be between 1 and %d", maxListLimit)}},
+		},
+		{
+			name:  "above maximum",
+			query: fmt.Sprintf("?limit=%d", maxListLimit+1),
+			wantDetails: details{{Field: "limit", Issue: issueInvalid,
+				Description: fmt.Sprintf("Must be between 1 and %d", maxListLimit)}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := listFrom(t, newTestRouter(), tc.query)
+
+			if tc.wantDetails == nil {
+				require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
+				assert.Equal(t, tc.wantLimit, decodeSuccess[listMessagesData](t, rec).Meta.Limit)
+				return
+			}
+
+			require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body)
+			body := decodeError(t, rec, errInvalidRequest)
+			assert.Equal(t, tc.wantDetails, details(body.Details))
+		})
+	}
+}
+
+func TestListMessagesStoreFailure(t *testing.T) {
+	rec := listFrom(t, newTestRouterWithStore(storeFailure{}), "")
+	require.Equal(t, http.StatusInternalServerError, rec.Code, "body: %s", rec.Body)
+
+	body := decodeError(t, rec, errInternal)
+	assert.Empty(t, body.Details, "an internal failure must not leak store details")
+}
+
 func TestMethodNotAllowed(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/messages", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/messages", nil)
 	rec := httptest.NewRecorder()
 	newTestRouter().ServeHTTP(rec, req)
 

@@ -26,6 +26,7 @@ The Go server is a demonstration of the ingestion slice of the design, not the f
 | --- | --- |
 | `GET /healthz` | Liveness check. |
 | `POST /api/v1/messages` | Accepts and validates a listener message, stores it, and returns the generated `message_id`. |
+| `GET /api/v1/messages` | Lists stored messages, newest first, capped by the optional `limit` query parameter (default `50`, maximum `200`). |
 
 It also includes structured `slog` logging with a per-request ID, request body size limits,
 configuration via flags/environment variables, graceful shutdown, and a persistent message store.
@@ -85,6 +86,17 @@ Invalid configuration fails fast at startup with an explanatory error and exit c
 
 ## Trying it out
 
+The quickest way is [`demo.sh`](demo.sh), which builds the server, starts it on a throwaway store,
+sends a few messages and lists them back:
+
+```bash
+./demo.sh          # or ./demo.sh 9000 to pick a port
+```
+
+It cleans up after itself — the binary and the message store live in a temporary directory.
+
+The same steps by hand:
+
 ```bash
 curl localhost:8080/healthz
 ```
@@ -106,6 +118,33 @@ curl -X POST localhost:8080/api/v1/messages \
   "data": {
     "message_id": "msg_36f05099-e55c-4df1-b266-1adbed8bcd67",
     "created_at": "2026-08-17T14:54:49Z"
+  }
+}
+```
+
+Read the most recent messages back:
+
+```bash
+curl 'localhost:8080/api/v1/messages?limit=2'
+```
+
+```json
+{
+  "data": {
+    "messages": [
+      {
+        "message_id": "msg_36f05099-e55c-4df1-b266-1adbed8bcd67",
+        "user_id": "usr_98765",
+        "message_type": "TEXT",
+        "text_content": "hello",
+        "created_at": "2026-08-17T14:54:49Z",
+        "expires_at": "2026-08-24T14:54:49Z"
+      }
+    ],
+    "meta": {
+      "count": 1,
+      "limit": 2
+    }
   }
 }
 ```
@@ -161,8 +200,9 @@ The code is a slice of the design, deliberately kept small. Compared to `DESIGN.
 * **A local store, not the NoSQL database.** Messages are persisted with the 7-day TTL from the
   design, but by the file-backed `local` driver: every live record is held in memory, the JSON Lines
   file is never compacted, and a second server instance would not see the first one's messages. The
-  DynamoDB implementation and the DB stream that follows from it do not exist yet, and no endpoint
-  reads a stored message back — `Get` and `List` are used by the store's own tests.
+  DynamoDB implementation and the DB stream that follows from it do not exist yet. `GET /api/v1/messages`
+  reads the newest records back, but there is no pagination cursor and no per-user or per-show filter;
+  `Get` is used by the store's own tests only.
 * **No media upload path.** `POST /api/v1/media/upload-url` and the presigned direct-to-object-storage
   upload do not exist. A `media_id` on a message is accepted as an opaque string; ownership and
   existence are never verified. The empty `data/media` directory is a placeholder.
