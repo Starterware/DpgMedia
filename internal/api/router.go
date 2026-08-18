@@ -3,17 +3,23 @@ package api
 import (
 	"log/slog"
 	"net/http"
+
+	"github.com/mikael/dpgmedia/internal/store"
 )
 
 type Options struct {
 	MaxBodyBytes int64
+	Store        store.MessageStore
 }
 
 func NewRouter(logger *slog.Logger, opts Options) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", handleHealth)
-	mux.Handle("POST /api/v1/messages", &messagesHandler{maxBodyBytes: opts.MaxBodyBytes})
+	mux.Handle("POST /api/v1/messages", &messagesHandler{
+		maxBodyBytes: opts.MaxBodyBytes,
+		store:        opts.Store,
+	})
 
 	return requestLogger(logger, mux)
 }

@@ -14,13 +14,13 @@ import (
 	"github.com/mikael/dpgmedia/internal/api"
 	"github.com/mikael/dpgmedia/internal/config"
 	"github.com/mikael/dpgmedia/internal/logging"
+	"github.com/mikael/dpgmedia/internal/store"
 )
 
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			// The flag package already printed the usage text.
 			os.Exit(0)
 		}
 		_, _ = fmt.Fprintln(os.Stderr, err)
@@ -37,7 +37,20 @@ func main() {
 }
 
 func run(cfg *config.Config, logger *slog.Logger) error {
-	handler := api.NewRouter(logger, api.Options{MaxBodyBytes: cfg.Server.MaxBodyBytes})
+	messages, err := openStore(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := messages.Close(); err != nil {
+			logger.Warn("failed to close message store", slog.Any("error", err))
+		}
+	}()
+
+	handler := api.NewRouter(logger, api.Options{
+		MaxBodyBytes: cfg.Server.MaxBodyBytes,
+		Store:        messages,
+	})
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
@@ -85,4 +98,16 @@ func run(cfg *config.Config, logger *slog.Logger) error {
 
 	logger.Info("server stopped cleanly")
 	return nil
+}
+
+func openStore(cfg *config.Config) (store.MessageStore, error) {
+	switch driver := cfg.StoreDriver(); driver {
+	case store.DriverLocal:
+		return store.OpenLocal(store.LocalOptions{
+			Path: cfg.Store.Path,
+			TTL:  cfg.Store.TTL,
+		})
+	default:
+		return nil, fmt.Errorf("unsupported store driver %q", driver)
+	}
 }

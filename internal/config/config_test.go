@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mikael/dpgmedia/internal/logging"
+	"github.com/mikael/dpgmedia/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,6 +25,11 @@ func TestLoadDefaults(t *testing.T) {
 			IdleTimeout:       120 * time.Second,
 			ShutdownTimeout:   10 * time.Second,
 			MaxBodyBytes:      32 << 10,
+		},
+		Store: StoreConfig{
+			Driver: "local",
+			Path:   "data/messages.jsonl",
+			TTL:    7 * 24 * time.Hour,
 		},
 		LogConfig: LogConfig{Level: "info", Format: "json"},
 	}
@@ -68,6 +74,12 @@ func TestUnparsableEnvFallsBackToDefault(t *testing.T) {
 	assert.Equal(t, int64(32<<10), cfg.Server.MaxBodyBytes)
 }
 
+func TestUnparsableArgs(t *testing.T) {
+	cfg, err := LoadArgs([]string{"-nope"})
+	require.Error(t, err)
+	assert.Nil(t, cfg, "a config that failed to parse must not reach the caller")
+}
+
 func TestValidationErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -77,9 +89,14 @@ func TestValidationErrors(t *testing.T) {
 		{"port too high", []string{"-port", "70000"}, "port (PORT)"},
 		{"port zero", []string{"-port", "0"}, "port (PORT)"},
 		{"empty env name", []string{"-env", ""}, "env (APP_ENV)"},
+		{"negative read header timeout", []string{"-server-read-header-timeout=-1s"}, "server-read-header-timeout"},
 		{"negative read timeout", []string{"-server-read-timeout=-1s"}, "server-read-timeout"},
+		{"negative write timeout", []string{"-server-write-timeout=-1s"}, "server-write-timeout"},
+		{"negative idle timeout", []string{"-server-idle-timeout=-1s"}, "server-idle-timeout"},
 		{"zero shutdown timeout", []string{"-server-shutdown-timeout", "0s"}, "server-shutdown-timeout"},
 		{"non-positive body cap", []string{"-server-max-body-bytes", "0"}, "server-max-body-bytes"},
+		{"unknown store driver", []string{"-store-driver", "dynamodb"}, "store-driver (STORE_DRIVER)"},
+		{"zero store ttl", []string{"-store-ttl", "0s"}, "store-ttl (STORE_TTL)"},
 		{"unknown log level", []string{"-log-level", "chatty"}, "log-level (LOG_LEVEL)"},
 		{"unknown log format", []string{"-log-format", "yaml"}, "log-format (LOG_FORMAT)"},
 	}
@@ -94,8 +111,6 @@ func TestValidationErrors(t *testing.T) {
 	}
 }
 
-// Accepted level and format spellings are covered by logging_test.go; this only
-// checks that the settings reach the logger options.
 func TestLogConfigOptions(t *testing.T) {
 	cfg := &Config{LogConfig: LogConfig{Level: "debug", Format: "text"}}
 
@@ -103,6 +118,12 @@ func TestLogConfigOptions(t *testing.T) {
 
 	assert.Equal(t, slog.LevelDebug, opts.Level)
 	assert.Equal(t, logging.FormatText, opts.Format)
+}
+
+func TestStoreDriver(t *testing.T) {
+	cfg := &Config{Store: StoreConfig{Driver: "local"}}
+
+	assert.Equal(t, store.DriverLocal, cfg.StoreDriver())
 }
 
 func TestLog(t *testing.T) {
@@ -116,6 +137,11 @@ func TestLog(t *testing.T) {
 			IdleTimeout:       2 * time.Minute,
 			ShutdownTimeout:   10 * time.Second,
 			MaxBodyBytes:      2048,
+		},
+		Store: StoreConfig{
+			Driver: "local",
+			Path:   "data/messages.jsonl",
+			TTL:    7 * 24 * time.Hour,
 		},
 		LogConfig: LogConfig{Level: "debug", Format: "text"},
 	}
@@ -137,6 +163,9 @@ func TestLog(t *testing.T) {
 		"idle_timeout":        "2m0s",
 		"shutdown_timeout":    "10s",
 		"max_body_bytes":      "2048",
+		"store_driver":        "local",
+		"store_path":          "data/messages.jsonl",
+		"store_ttl":           "168h0m0s",
 		"log_level":           "debug",
 		"log_format":          "text",
 	}, attrs)

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,14 +12,22 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mikael/dpgmedia/internal/message"
+	"github.com/mikael/dpgmedia/internal/store"
 )
 
 func post(t *testing.T, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return postTo(t, newTestRouter(), body)
+}
+
+func postTo(t *testing.T, router http.Handler, body string) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	newTestRouter().ServeHTTP(rec, req)
+	router.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -36,6 +46,47 @@ func TestCreateMessageAudio(t *testing.T) {
 
 	_, err := time.Parse(time.RFC3339, data.CreatedAt)
 	assert.NoError(t, err, "created_at = %q, want RFC 3339", data.CreatedAt)
+}
+
+func TestCreateMessageIsStored(t *testing.T) {
+	messages := newTestStore()
+	rec := postTo(t, newTestRouterWithStore(messages), `{
+		"user_id": "usr_98765",
+		"message_type": "AUDIO",
+		"text_content": "hello",
+		"media_id": "med_abc890_m4a"
+	}`)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body)
+	data := decodeSuccess[createMessageData](t, rec)
+
+	stored, err := messages.Get(t.Context(), data.MessageID)
+	require.NoError(t, err, "the returned message_id must be readable from the store")
+
+	assert.Equal(t, "usr_98765", stored.UserID)
+	assert.Equal(t, message.TypeAudio, stored.Type)
+	assert.Equal(t, "med_abc890_m4a", stored.MediaID)
+	assert.Equal(t, "hello", stored.TextContent)
+
+	assert.Equal(t, data.CreatedAt, stored.CreatedAt.Format(time.RFC3339),
+		"the stored record and the response report the same instant")
+	assert.Equal(t, stored.CreatedAt.Add(testStoreTTL), stored.ExpiresAt)
+}
+
+type storeFailure struct{ store.MessageStore }
+
+func (storeFailure) Create(context.Context, message.Message) (message.Message, error) {
+	return message.Message{}, errors.New("store unavailable")
+}
+
+func TestCreateMessageStoreFailure(t *testing.T) {
+	rec := postTo(t, newTestRouterWithStore(storeFailure{}),
+		`{"user_id":"usr_1","message_type":"TEXT","text_content":"hello"}`)
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code, "body: %s", rec.Body)
+
+	body := decodeError(t, rec, errInternal)
+	assert.Empty(t, body.Details, "an internal failure must not leak store details")
 }
 
 func TestCreateMessageValidation(t *testing.T) {

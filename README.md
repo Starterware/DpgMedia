@@ -25,10 +25,10 @@ The Go server is a demonstration of the ingestion slice of the design, not the f
 | Endpoint | Description |
 | --- | --- |
 | `GET /healthz` | Liveness check. |
-| `POST /api/v1/messages` | Accepts and validates a listener message, returns a generated `message_id`. |
+| `POST /api/v1/messages` | Accepts and validates a listener message, stores it, and returns the generated `message_id`. |
 
 It also includes structured `slog` logging with a per-request ID, request body size limits,
-configuration via flags/environment variables, and graceful shutdown.
+configuration via flags/environment variables, graceful shutdown, and a persistent message store.
 
 ## Requirements
 
@@ -67,6 +67,9 @@ Run `./bin/server -help` for the full list.
 | `-server-idle-timeout` | `SERVER_IDLE_TIMEOUT` | `120s` | Idle timeout. |
 | `-server-shutdown-timeout` | `SERVER_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown drain timeout. |
 | `-server-max-body-bytes` | `SERVER_MAX_BODY_BYTES` | `32768` | Maximum accepted request body size. |
+| `-store-driver` | `STORE_DRIVER` | `local` | Message store driver; only `local` exists today. |
+| `-store-path` | `STORE_PATH` | `data/messages.jsonl` | Backing file for the `local` driver; empty keeps messages in memory only. |
+| `-store-ttl` | `STORE_TTL` | `168h` | How long a stored message is retained (7 days). |
 | `-log-level` | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 | `-log-format` | `LOG_FORMAT` | `json` | `json` or `text`. |
 
@@ -155,9 +158,11 @@ go test -v ./internal/api  # a single package, verbosely
 The code is a slice of the design, deliberately kept small. Compared to `DESIGN.md` it does not
 (yet) include:
 
-* **No persistence.** Messages are validated, logged and acknowledged, but nothing is written to a
-  database. The NoSQL store, its 7-day TTL and the DB stream from the design are not implemented, so
-  a `message_id` returned by the API cannot be read back.
+* **A local store, not the NoSQL database.** Messages are persisted with the 7-day TTL from the
+  design, but by the file-backed `local` driver: every live record is held in memory, the JSON Lines
+  file is never compacted, and a second server instance would not see the first one's messages. The
+  DynamoDB implementation and the DB stream that follows from it do not exist yet, and no endpoint
+  reads a stored message back — `Get` and `List` are used by the store's own tests.
 * **No media upload path.** `POST /api/v1/media/upload-url` and the presigned direct-to-object-storage
   upload do not exist. A `media_id` on a message is accepted as an opaque string; ownership and
   existence are never verified. The empty `data/media` directory is a placeholder.

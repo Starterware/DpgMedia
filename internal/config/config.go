@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/mikael/dpgmedia/internal/logging"
+	"github.com/mikael/dpgmedia/internal/store"
 )
 
 type Config struct {
 	AppEnv    string
 	Port      int
 	Server    ServerConfig
+	Store     StoreConfig
 	LogConfig LogConfig
 }
 
@@ -25,6 +27,12 @@ type ServerConfig struct {
 	IdleTimeout       time.Duration
 	ShutdownTimeout   time.Duration
 	MaxBodyBytes      int64
+}
+
+type StoreConfig struct {
+	Driver string
+	Path   string
+	TTL    time.Duration
 }
 
 type LogConfig struct {
@@ -49,6 +57,10 @@ func LoadArgs(args []string) (*Config, error) {
 	fs.DurationVar(&cfg.Server.IdleTimeout, "server-idle-timeout", getEnvDuration("SERVER_IDLE_TIMEOUT", 120*time.Second), "Server idle timeout")
 	fs.DurationVar(&cfg.Server.ShutdownTimeout, "server-shutdown-timeout", getEnvDuration("SERVER_SHUTDOWN_TIMEOUT", 10*time.Second), "Graceful shutdown drain timeout")
 	fs.Int64Var(&cfg.Server.MaxBodyBytes, "server-max-body-bytes", getEnvInt64("SERVER_MAX_BODY_BYTES", 32<<10), "Maximum accepted request body size in bytes")
+
+	fs.StringVar(&cfg.Store.Driver, "store-driver", getEnv("STORE_DRIVER", string(store.DriverLocal)), "Message store driver (local)")
+	fs.StringVar(&cfg.Store.Path, "store-path", getEnv("STORE_PATH", "data/messages.jsonl"), "Message store file for the local driver (empty keeps messages in memory only)")
+	fs.DurationVar(&cfg.Store.TTL, "store-ttl", getEnvDuration("STORE_TTL", 7*24*time.Hour), "How long a stored message is retained")
 
 	fs.StringVar(&cfg.LogConfig.Level, "log-level", getEnv("LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 	fs.StringVar(&cfg.LogConfig.Format, "log-format", getEnv("LOG_FORMAT", "json"), "Log format (json, text)")
@@ -92,6 +104,13 @@ func (c *Config) Validate() error {
 		return errors.New("server-max-body-bytes (SERVER_MAX_BODY_BYTES) must be positive")
 	}
 
+	if _, err := store.ParseDriver(c.Store.Driver); err != nil {
+		return fmt.Errorf("store-driver (STORE_DRIVER): %w", err)
+	}
+	if c.Store.TTL <= 0 {
+		return errors.New("store-ttl (STORE_TTL) must be positive")
+	}
+
 	if _, err := logging.ParseLevel(c.LogConfig.Level); err != nil {
 		return fmt.Errorf("log-level (LOG_LEVEL): %w", err)
 	}
@@ -108,6 +127,11 @@ func (c *Config) LogConfigOptions() logging.Options {
 	return logging.Options{Level: level, Format: format}
 }
 
+func (c *Config) StoreDriver() store.Driver {
+	driver, _ := store.ParseDriver(c.Store.Driver)
+	return driver
+}
+
 func (c *Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("app_env", c.AppEnv),
@@ -118,6 +142,9 @@ func (c *Config) LogValue() slog.Value {
 		slog.Duration("idle_timeout", c.Server.IdleTimeout),
 		slog.Duration("shutdown_timeout", c.Server.ShutdownTimeout),
 		slog.Int64("max_body_bytes", c.Server.MaxBodyBytes),
+		slog.String("store_driver", c.Store.Driver),
+		slog.String("store_path", c.Store.Path),
+		slog.Duration("store_ttl", c.Store.TTL),
 		slog.String("log_level", c.LogConfig.Level),
 		slog.String("log_format", c.LogConfig.Format),
 	)

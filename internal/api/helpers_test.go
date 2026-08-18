@@ -11,15 +11,32 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mikael/dpgmedia/internal/store"
 )
 
-const testMaxBodyBytes = 32 << 10
+const (
+	testMaxBodyBytes = 32 << 10
+	testStoreTTL     = 7 * 24 * time.Hour
+)
 
 func newTestRouter() http.Handler {
+	return newTestRouterWithStore(newTestStore())
+}
+
+func newTestRouterWithStore(messages store.MessageStore) http.Handler {
 	return NewRouter(
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Options{MaxBodyBytes: testMaxBodyBytes},
+		Options{MaxBodyBytes: testMaxBodyBytes, Store: messages},
 	)
+}
+
+func newTestStore() *store.Local {
+	messages, err := store.OpenLocal(store.LocalOptions{TTL: testStoreTTL})
+	if err != nil {
+		panic(err)
+	}
+	return messages
 }
 
 func decodeSuccess[T any](t *testing.T, rec *httptest.ResponseRecorder) T {

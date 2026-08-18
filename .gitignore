@@ -34,3 +34,6 @@ go.work.sum
 
 # MacOs
 .DS_Store
+
+# Local message store (POC data)
+data/*.jsonl
