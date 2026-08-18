@@ -111,7 +111,7 @@ step "Starting the server on ${BASE_URL}"
 # responses; the whole log is printed as the last section.
 "${workdir}/server" \
 	-port "$PORT" \
-	-store-path "${workdir}/messages.jsonl" \
+	-store-message-path "${workdir}/messages.jsonl" \
 	-log-level info \
 	-log-format text \
 	>"$server_log" 2>&1 &

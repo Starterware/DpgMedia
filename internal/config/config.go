@@ -30,9 +30,10 @@ type ServerConfig struct {
 }
 
 type StoreConfig struct {
-	Driver string
-	Path   string
-	TTL    time.Duration
+	Driver      string
+	MessagePath string
+	MediaPath   string
+	MessageTTL  time.Duration
 }
 
 type LogConfig struct {
@@ -59,8 +60,9 @@ func LoadArgs(args []string) (*Config, error) {
 	fs.Int64Var(&cfg.Server.MaxBodyBytes, "server-max-body-bytes", getEnvInt64("SERVER_MAX_BODY_BYTES", 32<<10), "Maximum accepted request body size in bytes")
 
 	fs.StringVar(&cfg.Store.Driver, "store-driver", getEnv("STORE_DRIVER", string(store.DriverLocal)), "Message store driver (local)")
-	fs.StringVar(&cfg.Store.Path, "store-path", getEnv("STORE_PATH", "data/messages.jsonl"), "Message store file for the local driver (empty keeps messages in memory only)")
-	fs.DurationVar(&cfg.Store.TTL, "store-ttl", getEnvDuration("STORE_TTL", 7*24*time.Hour), "How long a stored message is retained")
+	fs.StringVar(&cfg.Store.MessagePath, "store-message-path", getEnv("STORE_MESSAGE_PATH", "data/messages.jsonl"), "Message store file for the local driver (empty keeps messages in memory only)")
+	fs.StringVar(&cfg.Store.MediaPath, "store-media-path", getEnv("STORE_MEDIA_PATH", "data/media/catalog.json"), "Media catalog file listing the available media")
+	fs.DurationVar(&cfg.Store.MessageTTL, "store-message-ttl", getEnvDuration("STORE_MESSAGE_TTL", 7*24*time.Hour), "How long a stored message is retained")
 
 	fs.StringVar(&cfg.LogConfig.Level, "log-level", getEnv("LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 	fs.StringVar(&cfg.LogConfig.Format, "log-format", getEnv("LOG_FORMAT", "json"), "Log format (json, text)")
@@ -107,8 +109,11 @@ func (c *Config) Validate() error {
 	if _, err := store.ParseDriver(c.Store.Driver); err != nil {
 		return fmt.Errorf("store-driver (STORE_DRIVER): %w", err)
 	}
-	if c.Store.TTL <= 0 {
-		return errors.New("store-ttl (STORE_TTL) must be positive")
+	if c.Store.MediaPath == "" {
+		return errors.New("store-media-path (STORE_MEDIA_PATH) is required")
+	}
+	if c.Store.MessageTTL <= 0 {
+		return errors.New("store-message-ttl (STORE_MESSAGE_TTL) must be positive")
 	}
 
 	if _, err := logging.ParseLevel(c.LogConfig.Level); err != nil {
@@ -143,8 +148,9 @@ func (c *Config) LogValue() slog.Value {
 		slog.Duration("shutdown_timeout", c.Server.ShutdownTimeout),
 		slog.Int64("max_body_bytes", c.Server.MaxBodyBytes),
 		slog.String("store_driver", c.Store.Driver),
-		slog.String("store_path", c.Store.Path),
-		slog.Duration("store_ttl", c.Store.TTL),
+		slog.String("store_message_path", c.Store.MessagePath),
+		slog.String("store_media_path", c.Store.MediaPath),
+		slog.Duration("store_message_ttl", c.Store.MessageTTL),
 		slog.String("log_level", c.LogConfig.Level),
 		slog.String("log_format", c.LogConfig.Format),
 	)

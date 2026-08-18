@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mikael/dpgmedia/internal/message"
+	"github.com/mikael/dpgmedia/internal/domain"
 	"github.com/mikael/dpgmedia/internal/store"
 )
 
@@ -45,10 +45,10 @@ func seedMessages(t *testing.T, messages store.MessageStore, n int) []string {
 
 	ids := make([]string, 0, n)
 	for i := range n {
-		msg, err := messages.Create(t.Context(), message.Message{
+		msg, err := messages.Create(t.Context(), domain.Message{
 			ID:          fmt.Sprintf("msg_%02d", i),
 			UserID:      "usr_98765",
-			Type:        message.TypeText,
+			Type:        domain.TypeText,
 			TextContent: fmt.Sprintf("hello %d", i),
 		})
 		require.NoError(t, err)
@@ -61,11 +61,11 @@ func seedMessages(t *testing.T, messages store.MessageStore, n int) []string {
 
 type storeFailure struct{ store.MessageStore }
 
-func (storeFailure) Create(context.Context, message.Message) (message.Message, error) {
-	return message.Message{}, errors.New("store unavailable")
+func (storeFailure) Create(context.Context, domain.Message) (domain.Message, error) {
+	return domain.Message{}, errors.New("store unavailable")
 }
 
-func (storeFailure) List(context.Context, int) ([]message.Message, error) {
+func (storeFailure) List(context.Context, int) ([]domain.Message, error) {
 	return nil, errors.New("store unavailable")
 }
 
@@ -87,8 +87,8 @@ func TestCreateMessageAudio(t *testing.T) {
 }
 
 func TestCreateMessageIsStored(t *testing.T) {
-	messages := newTestStore()
-	rec := postTo(t, newTestRouterWithStore(messages), `{
+	messages := newTestMessageStore()
+	rec := postTo(t, newTestRouterWithMessageStore(messages), `{
 		"user_id": "usr_98765",
 		"message_type": "AUDIO",
 		"text_content": "hello",
@@ -102,7 +102,7 @@ func TestCreateMessageIsStored(t *testing.T) {
 	require.NoError(t, err, "the returned message_id must be readable from the store")
 
 	assert.Equal(t, "usr_98765", stored.UserID)
-	assert.Equal(t, message.TypeAudio, stored.Type)
+	assert.Equal(t, domain.TypeAudio, stored.Type)
 	assert.Equal(t, "med_abc890_m4a", stored.MediaID)
 	assert.Equal(t, "hello", stored.TextContent)
 
@@ -112,7 +112,7 @@ func TestCreateMessageIsStored(t *testing.T) {
 }
 
 func TestCreateMessageStoreFailure(t *testing.T) {
-	rec := postTo(t, newTestRouterWithStore(storeFailure{}),
+	rec := postTo(t, newTestRouterWithMessageStore(storeFailure{}),
 		`{"user_id":"usr_1","message_type":"TEXT","text_content":"hello"}`)
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code, "body: %s", rec.Body)
@@ -275,10 +275,10 @@ func TestErrorCarriesRequestID(t *testing.T) {
 }
 
 func TestListMessages(t *testing.T) {
-	messages := newTestStore()
+	messages := newTestMessageStore()
 	ids := seedMessages(t, messages, 3)
 
-	rec := listFrom(t, newTestRouterWithStore(messages), "")
+	rec := listFrom(t, newTestRouterWithMessageStore(messages), "")
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
 
 	data := decodeSuccess[listMessagesData](t, rec)
@@ -292,7 +292,7 @@ func TestListMessages(t *testing.T) {
 
 	newest := data.Messages[0]
 	assert.Equal(t, "usr_98765", newest.UserID)
-	assert.Equal(t, message.TypeText, newest.MessageType)
+	assert.Equal(t, domain.TypeText, newest.MessageType)
 	assert.Equal(t, "hello 2", newest.TextContent)
 	assert.Empty(t, newest.MediaID)
 
@@ -305,16 +305,16 @@ func TestListMessages(t *testing.T) {
 }
 
 func TestListMessagesContent(t *testing.T) {
-	messages := newTestStore()
+	messages := newTestMessageStore()
 	seedMessages(t, messages, 1)
 
-	rec := listFrom(t, newTestRouterWithStore(messages), "")
+	rec := listFrom(t, newTestRouterWithMessageStore(messages), "")
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
 
 	msg := decodeSuccess[listMessagesData](t, rec).Messages[0]
 	assert.NotEmpty(t, msg.MessageID)
 	assert.Equal(t, "usr_98765", msg.UserID)
-	assert.Equal(t, message.TypeText, msg.MessageType)
+	assert.Equal(t, domain.TypeText, msg.MessageType)
 	assert.Equal(t, "hello 0", msg.TextContent)
 	assert.Empty(t, msg.MediaID)
 
@@ -331,10 +331,10 @@ func TestListMessagesEmpty(t *testing.T) {
 }
 
 func TestListMessagesLimit(t *testing.T) {
-	messages := newTestStore()
+	messages := newTestMessageStore()
 	ids := seedMessages(t, messages, 3)
 
-	rec := listFrom(t, newTestRouterWithStore(messages), "?limit=2")
+	rec := listFrom(t, newTestRouterWithMessageStore(messages), "?limit=2")
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
 
 	data := decodeSuccess[listMessagesData](t, rec)
@@ -400,7 +400,7 @@ func TestListMessagesInvalidLimit(t *testing.T) {
 }
 
 func TestListMessagesStoreFailure(t *testing.T) {
-	rec := listFrom(t, newTestRouterWithStore(storeFailure{}), "")
+	rec := listFrom(t, newTestRouterWithMessageStore(storeFailure{}), "")
 	require.Equal(t, http.StatusInternalServerError, rec.Code, "body: %s", rec.Body)
 
 	body := decodeError(t, rec, errInternal)

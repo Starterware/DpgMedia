@@ -11,16 +11,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mikael/dpgmedia/internal/id"
-	"github.com/mikael/dpgmedia/internal/message"
+	"github.com/mikael/dpgmedia/internal/domain"
 	"github.com/mikael/dpgmedia/internal/store"
 )
 
 type createMessageRequest struct {
-	UserID      string       `json:"user_id"`
-	MessageType message.Type `json:"message_type"`
-	TextContent string       `json:"text_content"`
-	MediaID     string       `json:"media_id"`
+	UserID      string      `json:"user_id"`
+	MessageType domain.Type `json:"message_type"`
+	TextContent string      `json:"text_content"`
+	MediaID     string      `json:"media_id"`
 }
 
 type createMessageData struct {
@@ -54,8 +53,8 @@ func (h *createMessageHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	msg, err := h.store.Create(ctx, message.Message{
-		ID:          id.New("msg"),
+	msg, err := h.store.Create(ctx, domain.Message{
+		ID:          domain.NewMessageID(),
 		UserID:      req.UserID,
 		Type:        req.MessageType,
 		TextContent: req.TextContent,
@@ -131,16 +130,16 @@ const (
 )
 
 type messageData struct {
-	MessageID   string       `json:"message_id"`
-	UserID      string       `json:"user_id"`
-	MessageType message.Type `json:"message_type"`
-	TextContent string       `json:"text_content,omitempty"`
-	MediaID     string       `json:"media_id,omitempty"`
-	CreatedAt   string       `json:"created_at"`
-	ExpiresAt   string       `json:"expires_at,omitempty"`
+	MessageID   string      `json:"message_id"`
+	UserID      string      `json:"user_id"`
+	MessageType domain.Type `json:"message_type"`
+	TextContent string      `json:"text_content,omitempty"`
+	MediaID     string      `json:"media_id,omitempty"`
+	CreatedAt   string      `json:"created_at"`
+	ExpiresAt   string      `json:"expires_at,omitempty"`
 }
 
-func newMessageData(msg message.Message) messageData {
+func newMessageData(msg domain.Message) messageData {
 	data := messageData{
 		MessageID:   msg.ID,
 		UserID:      msg.UserID,
@@ -228,9 +227,9 @@ func (r *createMessageRequest) validate() details {
 		errs.add("user_id", issueRequired, "Required field")
 	}
 
-	messageType, err := message.ParseType(string(r.MessageType))
+	messageType, err := domain.ParseType(string(r.MessageType))
 	if err != nil {
-		errs.add("message_type", issueInvalid, "Must be one of "+message.TypeNames)
+		errs.add("message_type", issueInvalid, "Must be one of "+domain.TypeNames)
 		return errs
 	}
 	r.MessageType = messageType

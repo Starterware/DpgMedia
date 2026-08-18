@@ -29,7 +29,8 @@ The Go server is a demonstration of the ingestion slice of the design, not the f
 | `GET /api/v1/messages` | Lists stored messages, newest first, capped by the optional `limit` query parameter (default `50`, maximum `200`). |
 
 It also includes structured `slog` logging with a per-request ID, request body size limits,
-configuration via flags/environment variables, graceful shutdown, and a persistent message store.
+configuration via flags/environment variables, graceful shutdown, a persistent message store, and a
+local media catalog.
 
 ## Requirements
 
@@ -69,8 +70,9 @@ Run `./bin/server -help` for the full list.
 | `-server-shutdown-timeout` | `SERVER_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown drain timeout. |
 | `-server-max-body-bytes` | `SERVER_MAX_BODY_BYTES` | `32768` | Maximum accepted request body size. |
 | `-store-driver` | `STORE_DRIVER` | `local` | Message store driver; only `local` exists today. |
-| `-store-path` | `STORE_PATH` | `data/messages.jsonl` | Backing file for the `local` driver; empty keeps messages in memory only. |
-| `-store-ttl` | `STORE_TTL` | `168h` | How long a stored message is retained (7 days). |
+| `-store-message-path` | `STORE_MESSAGE_PATH` | `data/messages.jsonl` | Backing file for the `local` driver; empty keeps messages in memory only. |
+| `-store-media-path` | `STORE_MEDIA_PATH` | `data/media/catalog.json` | Media catalog listing the media a `media_id` can resolve to. |
+| `-store-message-ttl` | `STORE_MESSAGE_TTL` | `168h` | How long a stored message is retained (7 days). |
 | `-log-level` | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 | `-log-format` | `LOG_FORMAT` | `json` | `json` or `text`. |
 
@@ -204,8 +206,10 @@ The code is a slice of the design, deliberately kept small. Compared to `DESIGN.
   reads the newest records back, but there is no pagination cursor and no per-user or per-show filter;
   `Get` is used by the store's own tests only.
 * **No media upload path.** `POST /api/v1/media/upload-url` and the presigned direct-to-object-storage
-  upload do not exist. A `media_id` on a message is accepted as an opaque string; ownership and
-  existence are never verified. The empty `data/media` directory is a placeholder.
+  upload do not exist. The media catalog is a static file that can only be read, so the assets it
+  lists are the only ones that exist. Nothing resolves a `media_id` yet either: on a message it is
+  still accepted as an opaque string, and neither its existence in the catalog nor its ownership is
+  verified.
 * **No authentication.** There is no token validation against the User Database / Identity Provider;
   `user_id` is taken from the request body and trusted as-is. Do not expose this server publicly.
 * **No asynchronous pipeline.** No event bus, no Speech-to-Text worker, no AI summary aggregator —

@@ -21,18 +21,18 @@ const (
 )
 
 func newTestRouter() http.Handler {
-	return newTestRouterWithStore(newTestStore())
+	return newTestRouterWithMessageStore(newTestMessageStore())
 }
 
-func newTestRouterWithStore(messages store.MessageStore) http.Handler {
+func newTestRouterWithMessageStore(messages store.MessageStore) http.Handler {
 	return NewRouter(
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Options{MaxBodyBytes: testMaxBodyBytes, Store: messages},
 	)
 }
 
-func newTestStore() *store.Local {
-	messages, err := store.OpenLocal(store.LocalOptions{TTL: testStoreTTL})
+func newTestMessageStore() *store.LocalMessageStore {
+	messages, err := store.OpenLocalMessageStore(store.LocalMessageStoreOptions{TTL: testStoreTTL})
 	if err != nil {
 		panic(err)
 	}

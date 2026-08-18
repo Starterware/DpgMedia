@@ -37,13 +37,23 @@ func main() {
 }
 
 func run(cfg *config.Config, logger *slog.Logger) error {
-	messages, err := openStore(cfg)
+	messages, err := openMessageStore(cfg)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		if err := messages.Close(); err != nil {
 			logger.Warn("failed to close message store", slog.Any("error", err))
+		}
+	}()
+
+	media, err := openMediaStore(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := media.Close(); err != nil {
+			logger.Warn("failed to close media store", slog.Any("error", err))
 		}
 	}()
 
@@ -100,12 +110,23 @@ func run(cfg *config.Config, logger *slog.Logger) error {
 	return nil
 }
 
-func openStore(cfg *config.Config) (store.MessageStore, error) {
+func openMessageStore(cfg *config.Config) (store.MessageStore, error) {
 	switch driver := cfg.StoreDriver(); driver {
 	case store.DriverLocal:
-		return store.OpenLocal(store.LocalOptions{
-			Path: cfg.Store.Path,
-			TTL:  cfg.Store.TTL,
+		return store.OpenLocalMessageStore(store.LocalMessageStoreOptions{
+			Path: cfg.Store.MessagePath,
+			TTL:  cfg.Store.MessageTTL,
+		})
+	default:
+		return nil, fmt.Errorf("unsupported store driver %q", driver)
+	}
+}
+
+func openMediaStore(cfg *config.Config) (store.MediaStore, error) {
+	switch driver := cfg.StoreDriver(); driver {
+	case store.DriverLocal:
+		return store.OpenLocalMediaStore(store.LocalMediaStoreOptions{
+			Path: cfg.Store.MediaPath,
 		})
 	default:
 		return nil, fmt.Errorf("unsupported store driver %q", driver)

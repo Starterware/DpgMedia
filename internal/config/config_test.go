@@ -27,9 +27,10 @@ func TestLoadDefaults(t *testing.T) {
 			MaxBodyBytes:      32 << 10,
 		},
 		Store: StoreConfig{
-			Driver: "local",
-			Path:   "data/messages.jsonl",
-			TTL:    7 * 24 * time.Hour,
+			Driver:      "local",
+			MessagePath: "data/messages.jsonl",
+			MediaPath:   "data/media/catalog.json",
+			MessageTTL:  7 * 24 * time.Hour,
 		},
 		LogConfig: LogConfig{Level: "info", Format: "json"},
 	}
@@ -96,7 +97,8 @@ func TestValidationErrors(t *testing.T) {
 		{"zero shutdown timeout", []string{"-server-shutdown-timeout", "0s"}, "server-shutdown-timeout"},
 		{"non-positive body cap", []string{"-server-max-body-bytes", "0"}, "server-max-body-bytes"},
 		{"unknown store driver", []string{"-store-driver", "dynamodb"}, "store-driver (STORE_DRIVER)"},
-		{"zero store ttl", []string{"-store-ttl", "0s"}, "store-ttl (STORE_TTL)"},
+		{"empty media path", []string{"-store-media-path", ""}, "store-media-path (STORE_MEDIA_PATH)"},
+		{"zero message ttl", []string{"-store-message-ttl", "0s"}, "store-message-ttl (STORE_MESSAGE_TTL)"},
 		{"unknown log level", []string{"-log-level", "chatty"}, "log-level (LOG_LEVEL)"},
 		{"unknown log format", []string{"-log-format", "yaml"}, "log-format (LOG_FORMAT)"},
 	}
@@ -139,9 +141,10 @@ func TestLog(t *testing.T) {
 			MaxBodyBytes:      2048,
 		},
 		Store: StoreConfig{
-			Driver: "local",
-			Path:   "data/messages.jsonl",
-			TTL:    7 * 24 * time.Hour,
+			Driver:      "local",
+			MessagePath: "data/messages.jsonl",
+			MediaPath:   "data/media/catalog.json",
+			MessageTTL:  7 * 24 * time.Hour,
 		},
 		LogConfig: LogConfig{Level: "debug", Format: "text"},
 	}
@@ -164,8 +167,9 @@ func TestLog(t *testing.T) {
 		"shutdown_timeout":    "10s",
 		"max_body_bytes":      "2048",
 		"store_driver":        "local",
-		"store_path":          "data/messages.jsonl",
-		"store_ttl":           "168h0m0s",
+		"store_message_path":  "data/messages.jsonl",
+		"store_media_path":    "data/media/catalog.json",
+		"store_message_ttl":   "168h0m0s",
 		"log_level":           "debug",
 		"log_format":          "text",
 	}, attrs)
