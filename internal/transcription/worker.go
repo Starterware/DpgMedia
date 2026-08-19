@@ -21,18 +21,16 @@ type Transcriber interface {
 
 type Options struct {
 	Messages store.MessageStore
-	Delay    time.Duration
+	Speech   Speech
 	Logger   *slog.Logger
 }
 
 type Worker struct {
 	messages store.MessageStore
-	delay    time.Duration
+	speech   Speech
 	logger   *slog.Logger
 	wg       sync.WaitGroup
 }
-
-const defaultDelay = time.Second
 
 var _ Transcriber = (*Worker)(nil)
 
@@ -42,14 +40,9 @@ func NewWorker(opts Options) *Worker {
 		logger = slog.Default()
 	}
 
-	delay := opts.Delay
-	if delay == 0 {
-		delay = defaultDelay
-	}
-
 	return &Worker{
 		messages: opts.Messages,
-		delay:    delay,
+		speech:   opts.Speech,
 		logger:   logger.With(slog.String("component", "transcription")),
 	}
 }
@@ -69,25 +62,28 @@ func (w *Worker) run(messageID, uri string) {
 	ctx := context.Background()
 	started := time.Now()
 
-	status, failure := domain.StatusReady, (*domain.Failure)(nil)
-	if err := w.transcribe(uri); err != nil {
-		status, failure = domain.StatusFailedTranscription, newFailure(err)
+	transcript, err := w.transcribe(ctx, uri)
+
+	update := store.MessageUpdate{Status: domain.StatusReady, Transcript: transcript}
+	if err != nil {
+		update = store.MessageUpdate{Status: domain.StatusFailedTranscription, Failure: newFailure(err)}
 		logger.Warn("transcription failed",
-			slog.String("failure_code", string(failure.Code)),
+			slog.String("failure_code", string(update.Failure.Code)),
 			slog.Any("error", err),
 		)
 	}
 
-	if _, err := w.messages.UpdateStatus(ctx, messageID, status, failure); err != nil {
+	if _, err := w.messages.Update(ctx, messageID, update); err != nil {
 		logger.Error("failed to record transcription result",
-			slog.String("status", string(status)),
+			slog.String("status", string(update.Status)),
 			slog.Any("error", err),
 		)
 		return
 	}
 
 	logger.Info("transcription finished",
-		slog.String("status", string(status)),
+		slog.String("status", string(update.Status)),
+		slog.Int("transcript_length", len(update.Transcript)),
 		slog.Duration("duration", time.Since(started).Round(time.Millisecond)),
 	)
 }
@@ -99,23 +95,26 @@ var (
 	errTranscription    = errors.New("transcription error")
 )
 
-func (w *Worker) transcribe(uri string) error {
+func (w *Worker) transcribe(ctx context.Context, uri string) (string, error) {
 	path, ok := strings.CutPrefix(uri, fileScheme)
 	if !ok {
-		return fmt.Errorf("%w: unsupported media uri %q", errMediaUnavailable, uri)
+		return "", fmt.Errorf("%w: unsupported media uri %q", errMediaUnavailable, uri)
 	}
 
 	info, err := os.Stat(path)
 	if err != nil {
-		return fmt.Errorf("%w: %w", errMediaUnavailable, err)
+		return "", fmt.Errorf("%w: %w", errMediaUnavailable, err)
 	}
 	if info.Size() == 0 {
-		return fmt.Errorf("%w: media file %s is empty", errTranscription, filepath.Base(path))
+		return "", fmt.Errorf("%w: media file %s is empty", errTranscription, filepath.Base(path))
 	}
 
-	time.Sleep(w.delay)
+	transcript, err := w.speech.Transcribe(ctx, path)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", errTranscription, err)
+	}
 
-	return nil
+	return transcript, nil
 }
 
 func newFailure(err error) *domain.Failure {

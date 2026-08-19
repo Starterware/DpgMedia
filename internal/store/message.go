@@ -12,11 +12,17 @@ type MessageStore interface {
 
 	Get(ctx context.Context, id string) (domain.Message, error)
 
-	UpdateStatus(ctx context.Context, id string, status domain.Status, failure *domain.Failure) (domain.Message, error)
+	Update(ctx context.Context, id string, update MessageUpdate) (domain.Message, error)
 
 	List(ctx context.Context, limit int) ([]domain.Message, error)
 
 	Close() error
+}
+
+type MessageUpdate struct {
+	Status     domain.Status
+	Transcript string
+	Failure    *domain.Failure
 }
 
 var (

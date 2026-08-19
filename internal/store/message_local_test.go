@@ -307,15 +307,17 @@ func TestLocalCreateStampsTheInitialStatus(t *testing.T) {
 		"audio waits for the transcription job")
 }
 
-func TestLocalUpdateStatus(t *testing.T) {
+func TestLocalUpdate(t *testing.T) {
 	s, _ := openTestMessageStore(t, LocalMessageStoreOptions{})
 
 	created, err := s.Create(context.Background(), testAudioMessage("msg_1"))
 	require.NoError(t, err)
 
-	updated, err := s.UpdateStatus(context.Background(), "msg_1", domain.StatusReady, nil)
+	updated, err := s.Update(context.Background(), "msg_1",
+		MessageUpdate{Status: domain.StatusReady, Transcript: "hallo allemaal"})
 	require.NoError(t, err)
 	assert.Equal(t, domain.StatusReady, updated.Status)
+	assert.Equal(t, "hallo allemaal", updated.Transcript)
 	assert.Nil(t, updated.Failure)
 	assert.Equal(t, created.CreatedAt, updated.CreatedAt, "an update leaves the creation instant alone")
 	assert.Equal(t, created.ExpiresAt, updated.ExpiresAt)
@@ -325,14 +327,15 @@ func TestLocalUpdateStatus(t *testing.T) {
 	assert.Equal(t, updated, got)
 }
 
-func TestLocalUpdateStatusRecordsTheFailure(t *testing.T) {
+func TestLocalUpdateRecordsTheFailure(t *testing.T) {
 	s, _ := openTestMessageStore(t, LocalMessageStoreOptions{})
 
 	_, err := s.Create(context.Background(), testAudioMessage("msg_1"))
 	require.NoError(t, err)
 
 	failure := &domain.Failure{Code: domain.FailureMediaUnavailable, Reason: "media not found: med_1"}
-	updated, err := s.UpdateStatus(context.Background(), "msg_1", domain.StatusFailedTranscription, failure)
+	updated, err := s.Update(context.Background(), "msg_1",
+		MessageUpdate{Status: domain.StatusFailedTranscription, Failure: failure})
 	require.NoError(t, err)
 
 	assert.Equal(t, domain.StatusFailedTranscription, updated.Status)
@@ -343,21 +346,23 @@ func TestLocalUpdateStatusRecordsTheFailure(t *testing.T) {
 	assert.True(t, failure.FailedAt.IsZero(), "the caller's failure is left untouched")
 }
 
-func TestLocalUpdateStatusKeepsAFailureTimestamp(t *testing.T) {
+func TestLocalUpdateKeepsAFailureTimestamp(t *testing.T) {
 	s, _ := openTestMessageStore(t, LocalMessageStoreOptions{})
 
 	_, err := s.Create(context.Background(), testAudioMessage("msg_1"))
 	require.NoError(t, err)
 
 	failedAt := testNow.Add(-time.Hour)
-	updated, err := s.UpdateStatus(context.Background(), "msg_1", domain.StatusFailedTranscription,
-		&domain.Failure{Code: domain.FailureTranscriptionError, Reason: "boom", FailedAt: failedAt})
+	updated, err := s.Update(context.Background(), "msg_1", MessageUpdate{
+		Status:  domain.StatusFailedTranscription,
+		Failure: &domain.Failure{Code: domain.FailureTranscriptionError, Reason: "boom", FailedAt: failedAt},
+	})
 	require.NoError(t, err)
 
 	assert.Equal(t, failedAt, updated.Failure.FailedAt)
 }
 
-func TestLocalUpdateStatusInvalid(t *testing.T) {
+func TestLocalUpdateInvalid(t *testing.T) {
 	s, _ := openTestMessageStore(t, LocalMessageStoreOptions{})
 
 	_, err := s.Create(context.Background(), testAudioMessage("msg_1"))
@@ -379,7 +384,8 @@ func TestLocalUpdateStatusInvalid(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := s.UpdateStatus(context.Background(), "msg_1", tc.status, tc.failure)
+			_, err := s.Update(context.Background(), "msg_1",
+				MessageUpdate{Status: tc.status, Failure: tc.failure})
 			require.Error(t, err)
 
 			got, err := s.Get(context.Background(), "msg_1")
@@ -390,14 +396,14 @@ func TestLocalUpdateStatusInvalid(t *testing.T) {
 	}
 }
 
-func TestLocalUpdateStatusUnknown(t *testing.T) {
+func TestLocalUpdateUnknown(t *testing.T) {
 	s, _ := openTestMessageStore(t, LocalMessageStoreOptions{})
 
-	_, err := s.UpdateStatus(context.Background(), "msg_missing", domain.StatusReady, nil)
+	_, err := s.Update(context.Background(), "msg_missing", MessageUpdate{Status: domain.StatusReady})
 	require.ErrorIs(t, err, ErrMessageNotFound)
 }
 
-func TestLocalUpdateStatusKeepsOneRecordPerMessage(t *testing.T) {
+func TestLocalUpdateKeepsOneRecordPerMessage(t *testing.T) {
 	s, path := openTestMessageStore(t, LocalMessageStoreOptions{})
 
 	for _, id := range []string{"msg_1", "msg_2"} {
@@ -405,7 +411,7 @@ func TestLocalUpdateStatusKeepsOneRecordPerMessage(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	_, err := s.UpdateStatus(context.Background(), "msg_1", domain.StatusReady, nil)
+	_, err := s.Update(context.Background(), "msg_1", MessageUpdate{Status: domain.StatusReady})
 	require.NoError(t, err)
 
 	body, err := os.ReadFile(path)
@@ -422,14 +428,16 @@ func TestLocalUpdateStatusKeepsOneRecordPerMessage(t *testing.T) {
 	assert.Empty(t, entries, "the rewrite leaves no temporary file behind")
 }
 
-func TestLocalUpdateStatusPersistsAcrossReopen(t *testing.T) {
+func TestLocalUpdatePersistsAcrossReopen(t *testing.T) {
 	s, path := openTestMessageStore(t, LocalMessageStoreOptions{})
 
 	_, err := s.Create(context.Background(), testAudioMessage("msg_1"))
 	require.NoError(t, err)
 
-	updated, err := s.UpdateStatus(context.Background(), "msg_1", domain.StatusFailedTranscription,
-		&domain.Failure{Code: domain.FailureTranscriptionError, Reason: "media file is empty"})
+	updated, err := s.Update(context.Background(), "msg_1", MessageUpdate{
+		Status:  domain.StatusFailedTranscription,
+		Failure: &domain.Failure{Code: domain.FailureTranscriptionError, Reason: "media file is empty"},
+	})
 	require.NoError(t, err)
 	require.NoError(t, s.Close())
 

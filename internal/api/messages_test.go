@@ -487,6 +487,41 @@ func TestMethodNotAllowed(t *testing.T) {
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 }
 
+func TestListMessagesReportsTheTranscript(t *testing.T) {
+	messages := newTestMessageStore(t)
+
+	msg, err := messages.Create(t.Context(), domain.Message{
+		ID:      "msg_1",
+		UserID:  "usr_98765",
+		Type:    domain.TypeAudio,
+		MediaID: "med_abc890_m4a",
+	})
+	require.NoError(t, err)
+
+	_, err = messages.Update(t.Context(), msg.ID, store.MessageUpdate{
+		Status:     domain.StatusReady,
+		Transcript: "Hallo, dit is een bericht voor de show.",
+	})
+	require.NoError(t, err)
+
+	rec := listFrom(t, newTestRouterWithMessageStore(t, messages), "")
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
+
+	got := decodeSuccess[listMessagesData](t, rec).Messages[0]
+	assert.Equal(t, domain.StatusReady, got.Status)
+	assert.Equal(t, "Hallo, dit is een bericht voor de show.", got.Transcript)
+}
+
+func TestListMessagesOmitsTheTranscriptWhenThereIsNone(t *testing.T) {
+	messages := newTestMessageStore(t)
+	seedMessages(t, messages, 1)
+
+	rec := listFrom(t, newTestRouterWithMessageStore(t, messages), "")
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
+
+	assert.NotContains(t, rec.Body.String(), `"transcript"`)
+}
+
 func TestListMessagesReportsTheFailure(t *testing.T) {
 	messages := newTestMessageStore(t)
 
@@ -499,8 +534,10 @@ func TestListMessagesReportsTheFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, domain.StatusPendingTranscription, msg.Status)
 
-	_, err = messages.UpdateStatus(t.Context(), msg.ID, domain.StatusFailedTranscription,
-		&domain.Failure{Code: domain.FailureMediaUnavailable, Reason: "media unavailable: media not found"})
+	_, err = messages.Update(t.Context(), msg.ID, store.MessageUpdate{
+		Status:  domain.StatusFailedTranscription,
+		Failure: &domain.Failure{Code: domain.FailureMediaUnavailable, Reason: "media unavailable: media not found"},
+	})
 	require.NoError(t, err)
 
 	rec := listFrom(t, newTestRouterWithMessageStore(t, messages), "")

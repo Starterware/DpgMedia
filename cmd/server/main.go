@@ -58,9 +58,19 @@ func run(cfg *config.Config, logger *slog.Logger) error {
 		}
 	}()
 
+	if cfg.Transcription.APIKey == "" {
+		logger.Warn("OPENAI_API_KEY is not set, audio messages will fail to transcribe")
+	}
+
 	transcriber := transcription.NewWorker(transcription.Options{
 		Messages: messages,
-		Logger:   logger,
+		Speech: transcription.NewWhisper(transcription.WhisperOptions{
+			APIKey:  cfg.Transcription.APIKey,
+			Model:   cfg.Transcription.Model,
+			BaseURL: cfg.Transcription.BaseURL,
+			Timeout: cfg.Transcription.Timeout,
+		}),
+		Logger: logger,
 	})
 	defer transcriber.Wait()
 

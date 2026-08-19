@@ -32,6 +32,10 @@ A message carrying media is only accepted when its `media_id` resolves to an ent
 catalog whose type matches the message; an unknown or mismatched `media_id` is rejected before
 anything is stored.
 
+An audio message is accepted straight away with status `PENDING_TRANSCRIPTION` and transcribed in
+the background; once the speech-to-text model has answered, the message carries the text in its
+`transcript` field and the status becomes `READY`, or `FAILED_TRANSCRIPTION` with the reason.
+
 It also includes structured `slog` logging with a per-request ID, request body size limits,
 configuration via flags/environment variables, graceful shutdown, a persistent message store, and a
 local media catalog.
@@ -77,6 +81,10 @@ Run `./bin/server -help` for the full list.
 | `-store-message-path` | `STORE_MESSAGE_PATH` | `data/messages.jsonl` | Backing file for the `local` driver; empty keeps messages in memory only. |
 | `-store-media-path` | `STORE_MEDIA_PATH` | `data/media/catalog.json` | Media catalog listing the media a `media_id` can resolve to. |
 | `-store-message-ttl` | `STORE_MESSAGE_TTL` | `168h` | How long a stored message is retained (7 days). |
+| _(none)_ | `OPENAI_API_KEY` | _(empty)_ | API key used to transcribe audio messages. Environment only — a flag would expose the secret in the process command line. Without it every audio message ends up `FAILED_TRANSCRIPTION`. |
+| `-transcription-model` | `TRANSCRIPTION_MODEL` | `whisper-1` | Speech-to-text model. |
+| `-transcription-base-url` | `TRANSCRIPTION_BASE_URL` | `https://api.openai.com/v1` | Base URL of the OpenAI-compatible transcription API. |
+| `-transcription-timeout` | `TRANSCRIPTION_TIMEOUT` | `2m` | Time limit for a single transcription request. |
 | `-log-level` | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 | `-log-format` | `LOG_FORMAT` | `json` | `json` or `text`. |
 
@@ -159,6 +167,16 @@ curl 'localhost:8080/api/v1/messages?limit=2'
   "data": {
     "messages": [
       {
+        "message_id": "msg_d32b7363-5593-4b38-91bd-c31dd92ba353",
+        "user_id": "usr_98765",
+        "message_type": "AUDIO",
+        "media_id": "med_ac16e652-9c2c-49f7-8546-a03e607a3d85",
+        "transcript": "Goedemorgen, wat een leuke uitzending vanochtend!",
+        "status": "READY",
+        "created_at": "2026-08-17T14:54:49Z",
+        "expires_at": "2026-08-24T14:54:49Z"
+      },
+      {
         "message_id": "msg_36f05099-e55c-4df1-b266-1adbed8bcd67",
         "user_id": "usr_98765",
         "message_type": "TEXT",
@@ -169,7 +187,7 @@ curl 'localhost:8080/api/v1/messages?limit=2'
       }
     ],
     "meta": {
-      "count": 1,
+      "count": 2,
       "limit": 2
     }
   }
@@ -236,11 +254,12 @@ The code is a slice of the design, deliberately kept small. Compared to `DESIGN.
   the ownership of the media is not verified.
 * **No authentication.** There is no token validation against the User Database / Identity Provider;
   `user_id` is taken from the request body and trusted as-is. Do not expose this server publicly.
-* **No real transcription pipeline.** The transcription job is a stand-in: it sleeps instead of
-  calling a speech recognition model and stores no transcript, only the resulting status. There is no
-  event bus and no AI summary aggregator, the job queue is a goroutine per message rather than a
-  worker pool with a bounded queue, and nothing retries a `FAILED_TRANSCRIPTION` message or picks up
-  the jobs lost when the process dies mid-flight.
+* **No full transcription pipeline.** An audio message is transcribed for real — the worker posts the
+  media file to OpenAI's `audio/transcriptions` endpoint and stores the text on the message — but the
+  surrounding machinery is missing: there is no event bus and no AI summary aggregator, the job queue
+  is a goroutine per message rather than a worker pool with a bounded queue, and nothing retries a
+  `FAILED_TRANSCRIPTION` message or picks up the jobs lost when the process dies mid-flight. Video
+  messages are never transcribed, only audio ones.
 * **No real-time delivery.** No Redis Pub/Sub, no WebSocket gateway and no DJ dashboard; accepted
   messages are not pushed anywhere.
 * **No station/show context.** Messages carry no `station_id` or `show_id`, so they cannot be routed

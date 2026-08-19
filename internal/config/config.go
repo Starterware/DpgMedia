@@ -6,18 +6,21 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mikael/dpgmedia/internal/logging"
 	"github.com/mikael/dpgmedia/internal/store"
+	"github.com/mikael/dpgmedia/internal/transcription"
 )
 
 type Config struct {
-	AppEnv    string
-	Port      int
-	Server    ServerConfig
-	Store     StoreConfig
-	LogConfig LogConfig
+	AppEnv        string
+	Port          int
+	Server        ServerConfig
+	Store         StoreConfig
+	Transcription TranscriptionConfig
+	LogConfig     LogConfig
 }
 
 type ServerConfig struct {
@@ -34,6 +37,13 @@ type StoreConfig struct {
 	MessagePath string
 	MediaPath   string
 	MessageTTL  time.Duration
+}
+
+type TranscriptionConfig struct {
+	APIKey  string
+	Model   string
+	BaseURL string
+	Timeout time.Duration
 }
 
 type LogConfig struct {
@@ -63,6 +73,11 @@ func LoadArgs(args []string) (*Config, error) {
 	fs.StringVar(&cfg.Store.MessagePath, "store-message-path", getEnv("STORE_MESSAGE_PATH", "data/messages.jsonl"), "Message store file for the local driver (empty keeps messages in memory only)")
 	fs.StringVar(&cfg.Store.MediaPath, "store-media-path", getEnv("STORE_MEDIA_PATH", "data/media/catalog.json"), "Media catalog file listing the available media")
 	fs.DurationVar(&cfg.Store.MessageTTL, "store-message-ttl", getEnvDuration("STORE_MESSAGE_TTL", 7*24*time.Hour), "How long a stored message is retained")
+
+	cfg.Transcription.APIKey = strings.TrimSpace(getEnv("OPENAI_API_KEY", ""))
+	fs.StringVar(&cfg.Transcription.Model, "transcription-model", getEnv("TRANSCRIPTION_MODEL", transcription.DefaultModel), "Speech-to-text model used to transcribe audio messages")
+	fs.StringVar(&cfg.Transcription.BaseURL, "transcription-base-url", getEnv("TRANSCRIPTION_BASE_URL", transcription.DefaultBaseURL), "Base URL of the OpenAI-compatible transcription API")
+	fs.DurationVar(&cfg.Transcription.Timeout, "transcription-timeout", getEnvDuration("TRANSCRIPTION_TIMEOUT", transcription.DefaultTimeout), "Time limit for a single transcription request")
 
 	fs.StringVar(&cfg.LogConfig.Level, "log-level", getEnv("LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 	fs.StringVar(&cfg.LogConfig.Format, "log-format", getEnv("LOG_FORMAT", "json"), "Log format (json, text)")
@@ -116,6 +131,16 @@ func (c *Config) Validate() error {
 		return errors.New("store-message-ttl (STORE_MESSAGE_TTL) must be positive")
 	}
 
+	if c.Transcription.Model == "" {
+		return errors.New("transcription-model (TRANSCRIPTION_MODEL) is required")
+	}
+	if c.Transcription.BaseURL == "" {
+		return errors.New("transcription-base-url (TRANSCRIPTION_BASE_URL) is required")
+	}
+	if c.Transcription.Timeout <= 0 {
+		return errors.New("transcription-timeout (TRANSCRIPTION_TIMEOUT) must be positive")
+	}
+
 	if _, err := logging.ParseLevel(c.LogConfig.Level); err != nil {
 		return fmt.Errorf("log-level (LOG_LEVEL): %w", err)
 	}
@@ -151,6 +176,10 @@ func (c *Config) LogValue() slog.Value {
 		slog.String("store_message_path", c.Store.MessagePath),
 		slog.String("store_media_path", c.Store.MediaPath),
 		slog.Duration("store_message_ttl", c.Store.MessageTTL),
+		slog.String("transcription_model", c.Transcription.Model),
+		slog.String("transcription_base_url", c.Transcription.BaseURL),
+		slog.Duration("transcription_timeout", c.Transcription.Timeout),
+		slog.Bool("transcription_api_key_set", c.Transcription.APIKey != ""),
 		slog.String("log_level", c.LogConfig.Level),
 		slog.String("log_format", c.LogConfig.Format),
 	)

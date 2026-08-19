@@ -189,6 +189,7 @@ type messageData struct {
 	MessageType domain.Type   `json:"message_type"`
 	TextContent string        `json:"text_content,omitempty"`
 	MediaID     string        `json:"media_id,omitempty"`
+	Transcript  string        `json:"transcript,omitempty"`
 	Status      domain.Status `json:"status"`
 	Failure     *failureData  `json:"failure,omitempty"`
 	CreatedAt   string        `json:"created_at"`
@@ -219,6 +220,7 @@ func newMessageData(msg domain.Message) messageData {
 		MessageType: msg.Type,
 		TextContent: msg.TextContent,
 		MediaID:     msg.MediaID,
+		Transcript:  msg.Transcript,
 		Status:      msg.Status,
 		Failure:     newFailureData(msg.Failure),
 		CreatedAt:   msg.CreatedAt.Format(time.RFC3339),

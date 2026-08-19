@@ -38,6 +38,7 @@ type messageRecord struct {
 	MessageType domain.Type    `json:"message_type"`
 	TextContent string         `json:"text_content,omitempty"`
 	MediaID     string         `json:"media_id,omitempty"`
+	Transcript  string         `json:"transcript,omitempty"`
 	Status      domain.Status  `json:"status"`
 	Failure     *failureRecord `json:"failure,omitempty"`
 	CreatedAt   time.Time      `json:"created_at"`
@@ -57,6 +58,7 @@ func newMessageRecord(msg domain.Message) messageRecord {
 		MessageType: msg.Type,
 		TextContent: msg.TextContent,
 		MediaID:     msg.MediaID,
+		Transcript:  msg.Transcript,
 		Status:      msg.Status,
 		Failure:     newFailureRecord(msg.Failure),
 		CreatedAt:   msg.CreatedAt,
@@ -91,6 +93,7 @@ func (r messageRecord) message() domain.Message {
 		Type:        r.MessageType,
 		TextContent: r.TextContent,
 		MediaID:     r.MediaID,
+		Transcript:  r.Transcript,
 		Status:      r.Status,
 		Failure:     r.Failure.failure(),
 		CreatedAt:   r.CreatedAt,
@@ -227,7 +230,7 @@ func (s *LocalMessageStore) append(msg domain.Message) error {
 	return nil
 }
 
-func (s *LocalMessageStore) UpdateStatus(ctx context.Context, id string, status domain.Status, failure *domain.Failure) (domain.Message, error) {
+func (s *LocalMessageStore) Update(ctx context.Context, id string, update MessageUpdate) (domain.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return domain.Message{}, err
 	}
@@ -241,11 +244,12 @@ func (s *LocalMessageStore) UpdateStatus(ctx context.Context, id string, status 
 	}
 
 	msg := stored
-	msg.Status = status
-	msg.Failure = failure
+	msg.Status = update.Status
+	msg.Transcript = update.Transcript
+	msg.Failure = update.Failure
 
-	if failure != nil && failure.FailedAt.IsZero() {
-		stamped := *failure
+	if update.Failure != nil && update.Failure.FailedAt.IsZero() {
+		stamped := *update.Failure
 		stamped.FailedAt = s.now().UTC()
 		msg.Failure = &stamped
 	}

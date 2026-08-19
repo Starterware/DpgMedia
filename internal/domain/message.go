@@ -13,6 +13,7 @@ type Message struct {
 	Type        Type
 	TextContent string
 	MediaID     string
+	Transcript  string
 	Status      Status
 	Failure     *Failure
 	CreatedAt   time.Time

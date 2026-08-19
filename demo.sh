@@ -144,6 +144,10 @@ done
 request GET /healthz
 
 section "Client"
+if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+	printf '\n%sOPENAI_API_KEY is not set, so the audio message will end up FAILED_TRANSCRIPTION.%s\n' "$dim" "$reset"
+fi
+
 step "Sending a TEXT message"
 request POST  /api/v1/messages '{"user_id":"usr_98765","message_type":"TEXT","text_content":"Great show this morning!"}'
 
@@ -163,9 +167,14 @@ step "Listing every message before the transcription job has finished"
 request GET /api/v1/messages
 
 step "Waiting for the transcription job"
-sleep 2
+for _ in $(seq 60); do
+	if ! request GET /api/v1/messages | grep -q PENDING_TRANSCRIPTION; then
+		break
+	fi
+	sleep 1
+done
 
-step "Listing every message again, the audio message is now READY"
+step "Listing every message again, the audio message now carries its transcript"
 request GET /api/v1/messages
 
 section "Server logs"

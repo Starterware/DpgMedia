@@ -32,6 +32,11 @@ func TestLoadDefaults(t *testing.T) {
 			MediaPath:   "data/media/catalog.json",
 			MessageTTL:  7 * 24 * time.Hour,
 		},
+		Transcription: TranscriptionConfig{
+			Model:   "whisper-1",
+			BaseURL: "https://api.openai.com/v1",
+			Timeout: 2 * time.Minute,
+		},
 		LogConfig: LogConfig{Level: "info", Format: "json"},
 	}
 	assert.Equal(t, want, cfg)
@@ -48,6 +53,27 @@ func TestLoadFromEnv(t *testing.T) {
 	assert.Equal(t, 9000, cfg.Port)
 	assert.Equal(t, 30*time.Second, cfg.Server.ReadTimeout)
 	assert.Equal(t, "debug", cfg.LogConfig.Level)
+}
+
+func TestLoadReadsTheAPIKeyFromTheEnvironmentOnly(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-secret")
+
+	cfg, err := LoadArgs(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-secret", cfg.Transcription.APIKey)
+
+	cfg, err = LoadArgs([]string{"-openai-api-key", "sk-other"})
+	require.Error(t, err, "the key must not be settable as a flag")
+	assert.Nil(t, cfg)
+}
+
+func TestLoadTreatsABlankAPIKeyAsUnset(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "  \n")
+
+	cfg, err := LoadArgs(nil)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Transcription.APIKey,
+		"whitespace must not be sent as a bearer token, it reads as a missing key at the API")
 }
 
 func TestFlagsOverrideEnv(t *testing.T) {
@@ -99,6 +125,10 @@ func TestValidationErrors(t *testing.T) {
 		{"unknown store driver", []string{"-store-driver", "dynamodb"}, "store-driver (STORE_DRIVER)"},
 		{"empty media path", []string{"-store-media-path", ""}, "store-media-path (STORE_MEDIA_PATH)"},
 		{"zero message ttl", []string{"-store-message-ttl", "0s"}, "store-message-ttl (STORE_MESSAGE_TTL)"},
+		{"empty transcription model", []string{"-transcription-model", ""}, "transcription-model (TRANSCRIPTION_MODEL)"},
+		{"empty transcription base url", []string{"-transcription-base-url", ""}, "transcription-base-url (TRANSCRIPTION_BASE_URL)"},
+		{"zero transcription timeout", []string{"-transcription-timeout", "0s"}, "transcription-timeout (TRANSCRIPTION_TIMEOUT)"},
+		{"negative transcription timeout", []string{"-transcription-timeout=-1s"}, "transcription-timeout (TRANSCRIPTION_TIMEOUT)"},
 		{"unknown log level", []string{"-log-level", "chatty"}, "log-level (LOG_LEVEL)"},
 		{"unknown log format", []string{"-log-format", "yaml"}, "log-format (LOG_FORMAT)"},
 	}
@@ -146,6 +176,12 @@ func TestLog(t *testing.T) {
 			MediaPath:   "data/media/catalog.json",
 			MessageTTL:  7 * 24 * time.Hour,
 		},
+		Transcription: TranscriptionConfig{
+			APIKey:  "sk-secret",
+			Model:   "whisper-1",
+			BaseURL: "https://api.openai.com/v1",
+			Timeout: 2 * time.Minute,
+		},
 		LogConfig: LogConfig{Level: "debug", Format: "text"},
 	}
 
@@ -158,19 +194,23 @@ func TestLog(t *testing.T) {
 	}
 
 	assert.Equal(t, map[string]string{
-		"app_env":             "production",
-		"port":                "9000",
-		"read_header_timeout": "5s",
-		"read_timeout":        "15s",
-		"write_timeout":       "15s",
-		"idle_timeout":        "2m0s",
-		"shutdown_timeout":    "10s",
-		"max_body_bytes":      "2048",
-		"store_driver":        "local",
-		"store_message_path":  "data/messages.jsonl",
-		"store_media_path":    "data/media/catalog.json",
-		"store_message_ttl":   "168h0m0s",
-		"log_level":           "debug",
-		"log_format":          "text",
+		"app_env":                   "production",
+		"port":                      "9000",
+		"read_header_timeout":       "5s",
+		"read_timeout":              "15s",
+		"write_timeout":             "15s",
+		"idle_timeout":              "2m0s",
+		"shutdown_timeout":          "10s",
+		"max_body_bytes":            "2048",
+		"store_driver":              "local",
+		"store_message_path":        "data/messages.jsonl",
+		"store_media_path":          "data/media/catalog.json",
+		"store_message_ttl":         "168h0m0s",
+		"transcription_model":       "whisper-1",
+		"transcription_base_url":    "https://api.openai.com/v1",
+		"transcription_timeout":     "2m0s",
+		"transcription_api_key_set": "true",
+		"log_level":                 "debug",
+		"log_format":                "text",
 	}, attrs)
 }

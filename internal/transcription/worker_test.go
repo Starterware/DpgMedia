@@ -2,11 +2,12 @@ package transcription
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,18 +18,39 @@ import (
 	"github.com/mikael/dpgmedia/internal/store"
 )
 
-const testDelay = 20 * time.Millisecond
+const (
+	testDelay      = 20 * time.Millisecond
+	testTranscript = "Hallo, dit is een bericht voor de show."
+)
 
-func writeMedia(t *testing.T, name string, size int) string {
-	t.Helper()
+type fakeSpeech struct {
+	transcript string
+	err        error
+	delay      time.Duration
+}
 
-	path := filepath.Join(t.TempDir(), name)
-	require.NoError(t, os.WriteFile(path, make([]byte, size), 0o644))
+func (f fakeSpeech) Transcribe(ctx context.Context, path string) (string, error) {
+	select {
+	case <-time.After(f.delay):
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	return f.transcript, f.err
+}
 
-	return "file://" + path
+type speechFunc func(ctx context.Context, path string) (string, error)
+
+func (f speechFunc) Transcribe(ctx context.Context, path string) (string, error) {
+	return f(ctx, path)
 }
 
 func newTestWorker(t *testing.T) (*Worker, *store.LocalMessageStore) {
+	t.Helper()
+
+	return newTestWorkerWithSpeech(t, fakeSpeech{transcript: testTranscript, delay: testDelay})
+}
+
+func newTestWorkerWithSpeech(t *testing.T, speech Speech) (*Worker, *store.LocalMessageStore) {
 	t.Helper()
 
 	messages, err := store.OpenLocalMessageStore(store.LocalMessageStoreOptions{TTL: 7 * 24 * time.Hour})
@@ -37,7 +59,7 @@ func newTestWorker(t *testing.T) (*Worker, *store.LocalMessageStore) {
 
 	worker := NewWorker(Options{
 		Messages: messages,
-		Delay:    testDelay,
+		Speech:   speech,
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 
@@ -65,13 +87,27 @@ func transcribe(t *testing.T, worker *Worker, messages store.MessageStore, uri s
 	return got
 }
 
-func TestWorkerMarksTheMessageReady(t *testing.T) {
+func TestWorkerStoresTheTranscript(t *testing.T) {
 	worker, messages := newTestWorker(t)
 
 	got := transcribe(t, worker, messages, writeMedia(t, "voice-note.wav", 1024))
 
 	assert.Equal(t, domain.StatusReady, got.Status)
+	assert.Equal(t, testTranscript, got.Transcript)
 	assert.Nil(t, got.Failure)
+}
+
+func TestWorkerPassesTheMediaFileToTheSpeechModel(t *testing.T) {
+	var seen string
+	worker, messages := newTestWorkerWithSpeech(t, speechFunc(func(_ context.Context, path string) (string, error) {
+		seen = path
+		return testTranscript, nil
+	}))
+
+	uri := writeMedia(t, "voice-note.wav", 1024)
+	transcribe(t, worker, messages, uri)
+
+	assert.Equal(t, strings.TrimPrefix(uri, "file://"), seen)
 }
 
 func TestWorkerWaitsForTheJobToFinish(t *testing.T) {
@@ -120,12 +156,27 @@ func TestWorkerRecordsFailures(t *testing.T) {
 			got := transcribe(t, worker, messages, tc.uri)
 
 			assert.Equal(t, domain.StatusFailedTranscription, got.Status)
+			assert.Empty(t, got.Transcript, "a failed transcription stores no text")
 			require.NotNil(t, got.Failure, "a failed message carries the details of the failure")
 			assert.Equal(t, tc.wantCode, got.Failure.Code)
 			assert.Contains(t, got.Failure.Reason, tc.wantReason)
 			assert.False(t, got.Failure.FailedAt.IsZero())
 		})
 	}
+}
+
+func TestWorkerRecordsASpeechModelFailure(t *testing.T) {
+	worker, messages := newTestWorkerWithSpeech(t,
+		fakeSpeech{err: errors.New("whisper-1 responded 401: invalid api key")})
+
+	got := transcribe(t, worker, messages, writeMedia(t, "voice-note.wav", 1024))
+
+	assert.Equal(t, domain.StatusFailedTranscription, got.Status)
+	assert.Empty(t, got.Transcript, "a failed transcription stores no text")
+	require.NotNil(t, got.Failure, "a failed message carries the details of the failure")
+	assert.Equal(t, domain.FailureTranscriptionError, got.Failure.Code)
+	assert.Contains(t, got.Failure.Reason, "invalid api key")
+	assert.False(t, got.Failure.FailedAt.IsZero())
 }
 
 func TestWorkerSurvivesAnUnknownMessage(t *testing.T) {
