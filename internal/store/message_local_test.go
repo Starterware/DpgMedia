@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -282,4 +283,173 @@ func TestLocalConcurrentCreate(t *testing.T) {
 	messages, err := s.List(context.Background(), 0)
 	require.NoError(t, err)
 	assert.Len(t, messages, writers)
+}
+
+func testAudioMessage(id string) domain.Message {
+	return domain.Message{
+		ID:      id,
+		UserID:  "usr_98765",
+		Type:    domain.TypeAudio,
+		MediaID: "med_1",
+	}
+}
+
+func TestLocalCreateStampsTheInitialStatus(t *testing.T) {
+	s, _ := openTestMessageStore(t, LocalMessageStoreOptions{})
+
+	text, err := s.Create(context.Background(), testMessage("msg_text"))
+	require.NoError(t, err)
+	assert.Equal(t, domain.StatusReady, text.Status)
+
+	audio, err := s.Create(context.Background(), testAudioMessage("msg_audio"))
+	require.NoError(t, err)
+	assert.Equal(t, domain.StatusPendingTranscription, audio.Status,
+		"audio waits for the transcription job")
+}
+
+func TestLocalUpdateStatus(t *testing.T) {
+	s, _ := openTestMessageStore(t, LocalMessageStoreOptions{})
+
+	created, err := s.Create(context.Background(), testAudioMessage("msg_1"))
+	require.NoError(t, err)
+
+	updated, err := s.UpdateStatus(context.Background(), "msg_1", domain.StatusReady, nil)
+	require.NoError(t, err)
+	assert.Equal(t, domain.StatusReady, updated.Status)
+	assert.Nil(t, updated.Failure)
+	assert.Equal(t, created.CreatedAt, updated.CreatedAt, "an update leaves the creation instant alone")
+	assert.Equal(t, created.ExpiresAt, updated.ExpiresAt)
+
+	got, err := s.Get(context.Background(), "msg_1")
+	require.NoError(t, err)
+	assert.Equal(t, updated, got)
+}
+
+func TestLocalUpdateStatusRecordsTheFailure(t *testing.T) {
+	s, _ := openTestMessageStore(t, LocalMessageStoreOptions{})
+
+	_, err := s.Create(context.Background(), testAudioMessage("msg_1"))
+	require.NoError(t, err)
+
+	failure := &domain.Failure{Code: domain.FailureMediaUnavailable, Reason: "media not found: med_1"}
+	updated, err := s.UpdateStatus(context.Background(), "msg_1", domain.StatusFailedTranscription, failure)
+	require.NoError(t, err)
+
+	assert.Equal(t, domain.StatusFailedTranscription, updated.Status)
+	require.NotNil(t, updated.Failure)
+	assert.Equal(t, domain.FailureMediaUnavailable, updated.Failure.Code)
+	assert.Equal(t, "media not found: med_1", updated.Failure.Reason)
+	assert.Equal(t, testNow, updated.Failure.FailedAt, "the store stamps the failure instant")
+	assert.True(t, failure.FailedAt.IsZero(), "the caller's failure is left untouched")
+}
+
+func TestLocalUpdateStatusKeepsAFailureTimestamp(t *testing.T) {
+	s, _ := openTestMessageStore(t, LocalMessageStoreOptions{})
+
+	_, err := s.Create(context.Background(), testAudioMessage("msg_1"))
+	require.NoError(t, err)
+
+	failedAt := testNow.Add(-time.Hour)
+	updated, err := s.UpdateStatus(context.Background(), "msg_1", domain.StatusFailedTranscription,
+		&domain.Failure{Code: domain.FailureTranscriptionError, Reason: "boom", FailedAt: failedAt})
+	require.NoError(t, err)
+
+	assert.Equal(t, failedAt, updated.Failure.FailedAt)
+}
+
+func TestLocalUpdateStatusInvalid(t *testing.T) {
+	s, _ := openTestMessageStore(t, LocalMessageStoreOptions{})
+
+	_, err := s.Create(context.Background(), testAudioMessage("msg_1"))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		status  domain.Status
+		failure *domain.Failure
+	}{
+		{name: "unknown status", status: domain.Status("DONE")},
+		{name: "failed without a failure", status: domain.StatusFailedTranscription},
+		{
+			name:    "failure without a reason",
+			status:  domain.StatusFailedTranscription,
+			failure: &domain.Failure{Code: domain.FailureTranscriptionError},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.UpdateStatus(context.Background(), "msg_1", tc.status, tc.failure)
+			require.Error(t, err)
+
+			got, err := s.Get(context.Background(), "msg_1")
+			require.NoError(t, err)
+			assert.Equal(t, domain.StatusPendingTranscription, got.Status,
+				"a rejected update leaves the stored message alone")
+		})
+	}
+}
+
+func TestLocalUpdateStatusUnknown(t *testing.T) {
+	s, _ := openTestMessageStore(t, LocalMessageStoreOptions{})
+
+	_, err := s.UpdateStatus(context.Background(), "msg_missing", domain.StatusReady, nil)
+	require.ErrorIs(t, err, ErrMessageNotFound)
+}
+
+func TestLocalUpdateStatusKeepsOneRecordPerMessage(t *testing.T) {
+	s, path := openTestMessageStore(t, LocalMessageStoreOptions{})
+
+	for _, id := range []string{"msg_1", "msg_2"} {
+		_, err := s.Create(context.Background(), testAudioMessage(id))
+		require.NoError(t, err)
+	}
+
+	_, err := s.UpdateStatus(context.Background(), "msg_1", domain.StatusReady, nil)
+	require.NoError(t, err)
+
+	body, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	assert.Len(t, lines, 2, "the update rewrites the record instead of adding a second one:\n%s", body)
+	assert.Contains(t, lines[0], `"message_id":"msg_1"`)
+	assert.Contains(t, lines[0], `"status":"READY"`)
+	assert.Contains(t, lines[1], `"status":"PENDING_TRANSCRIPTION"`)
+
+	entries, err := filepath.Glob(filepath.Join(filepath.Dir(path), "*.tmp"))
+	require.NoError(t, err)
+	assert.Empty(t, entries, "the rewrite leaves no temporary file behind")
+}
+
+func TestLocalUpdateStatusPersistsAcrossReopen(t *testing.T) {
+	s, path := openTestMessageStore(t, LocalMessageStoreOptions{})
+
+	_, err := s.Create(context.Background(), testAudioMessage("msg_1"))
+	require.NoError(t, err)
+
+	updated, err := s.UpdateStatus(context.Background(), "msg_1", domain.StatusFailedTranscription,
+		&domain.Failure{Code: domain.FailureTranscriptionError, Reason: "media file is empty"})
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+
+	reopened, _ := openTestMessageStore(t, LocalMessageStoreOptions{Path: path})
+
+	got, err := reopened.Get(context.Background(), "msg_1")
+	require.NoError(t, err)
+	assert.Equal(t, updated, got, "replaying the log keeps the last status written for an id")
+}
+
+func TestLocalReadsRecordsWrittenBeforeTheStatusField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "messages.jsonl")
+	line := `{"message_id":"msg_1","user_id":"usr_98765","message_type":"TEXT","text_content":"hello",` +
+		`"created_at":"2026-08-17T14:54:49Z","expires_at":"2026-08-24T14:54:49Z"}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(line), 0o644))
+
+	s, _ := openTestMessageStore(t, LocalMessageStoreOptions{Path: path})
+
+	got, err := s.Get(context.Background(), "msg_1")
+	require.NoError(t, err)
+	assert.Equal(t, domain.StatusReady, got.Status)
+	assert.Nil(t, got.Failure)
 }

@@ -5,11 +5,14 @@ import (
 	"net/http"
 
 	"github.com/mikael/dpgmedia/internal/store"
+	"github.com/mikael/dpgmedia/internal/transcription"
 )
 
 type Options struct {
 	MaxBodyBytes int64
-	Store        store.MessageStore
+	MessageStore store.MessageStore
+	MediaStore   store.MediaStore
+	Transcriber  transcription.Transcriber
 }
 
 func NewRouter(logger *slog.Logger, opts Options) http.Handler {
@@ -18,9 +21,11 @@ func NewRouter(logger *slog.Logger, opts Options) http.Handler {
 	mux.HandleFunc("GET /healthz", handleHealth)
 	mux.Handle("POST /api/v1/messages", &createMessageHandler{
 		maxBodyBytes: opts.MaxBodyBytes,
-		store:        opts.Store,
+		messages:     opts.MessageStore,
+		media:        opts.MediaStore,
+		transcriber:  opts.Transcriber,
 	})
-	mux.Handle("GET /api/v1/messages", &listMessagesHandler{store: opts.Store})
+	mux.Handle("GET /api/v1/messages", &listMessagesHandler{messages: opts.MessageStore})
 
 	return requestLogger(logger, mux)
 }

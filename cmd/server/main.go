@@ -15,6 +15,7 @@ import (
 	"github.com/mikael/dpgmedia/internal/config"
 	"github.com/mikael/dpgmedia/internal/logging"
 	"github.com/mikael/dpgmedia/internal/store"
+	"github.com/mikael/dpgmedia/internal/transcription"
 )
 
 func main() {
@@ -57,9 +58,17 @@ func run(cfg *config.Config, logger *slog.Logger) error {
 		}
 	}()
 
+	transcriber := transcription.NewWorker(transcription.Options{
+		Messages: messages,
+		Logger:   logger,
+	})
+	defer transcriber.Wait()
+
 	handler := api.NewRouter(logger, api.Options{
 		MaxBodyBytes: cfg.Server.MaxBodyBytes,
-		Store:        messages,
+		MessageStore: messages,
+		MediaStore:   media,
+		Transcriber:  transcriber,
 	})
 
 	srv := &http.Server{

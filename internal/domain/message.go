@@ -13,6 +13,8 @@ type Message struct {
 	Type        Type
 	TextContent string
 	MediaID     string
+	Status      Status
+	Failure     *Failure
 	CreatedAt   time.Time
 	ExpiresAt   time.Time
 }
@@ -27,6 +29,14 @@ func (m Message) Validate() error {
 		return fmt.Errorf("%w: user_id is required", ErrInvalidMessage)
 	case !m.Type.Valid():
 		return fmt.Errorf("%w: unknown type %q", ErrInvalidMessage, m.Type)
+	case !m.Status.Valid():
+		return fmt.Errorf("%w: unknown status %q", ErrInvalidMessage, m.Status)
+	case m.Status.Failed() && m.Failure == nil:
+		return fmt.Errorf("%w: failure is required for status %s", ErrInvalidMessage, m.Status)
+	case !m.Status.Failed() && m.Failure != nil:
+		return fmt.Errorf("%w: failure is not allowed for status %s", ErrInvalidMessage, m.Status)
+	case m.Failure != nil:
+		return m.Failure.Validate()
 	default:
 		return nil
 	}

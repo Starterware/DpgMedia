@@ -2,6 +2,7 @@ package store
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -32,13 +33,21 @@ type LocalMessageStoreOptions struct {
 }
 
 type messageRecord struct {
-	MessageID   string      `json:"message_id"`
-	UserID      string      `json:"user_id"`
-	MessageType domain.Type `json:"message_type"`
-	TextContent string      `json:"text_content,omitempty"`
-	MediaID     string      `json:"media_id,omitempty"`
-	CreatedAt   time.Time   `json:"created_at"`
-	ExpiresAt   time.Time   `json:"expires_at"`
+	MessageID   string         `json:"message_id"`
+	UserID      string         `json:"user_id"`
+	MessageType domain.Type    `json:"message_type"`
+	TextContent string         `json:"text_content,omitempty"`
+	MediaID     string         `json:"media_id,omitempty"`
+	Status      domain.Status  `json:"status"`
+	Failure     *failureRecord `json:"failure,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
+	ExpiresAt   time.Time      `json:"expires_at"`
+}
+
+type failureRecord struct {
+	Code     domain.FailureCode `json:"code"`
+	Reason   string             `json:"reason"`
+	FailedAt time.Time          `json:"failed_at"`
 }
 
 func newMessageRecord(msg domain.Message) messageRecord {
@@ -48,18 +57,42 @@ func newMessageRecord(msg domain.Message) messageRecord {
 		MessageType: msg.Type,
 		TextContent: msg.TextContent,
 		MediaID:     msg.MediaID,
+		Status:      msg.Status,
+		Failure:     newFailureRecord(msg.Failure),
 		CreatedAt:   msg.CreatedAt,
 		ExpiresAt:   msg.ExpiresAt,
 	}
 }
 
+func newFailureRecord(failure *domain.Failure) *failureRecord {
+	if failure == nil {
+		return nil
+	}
+	return &failureRecord{Code: failure.Code, Reason: failure.Reason, FailedAt: failure.FailedAt}
+}
+
+func (r *failureRecord) failure() *domain.Failure {
+	if r == nil {
+		return nil
+	}
+	return &domain.Failure{Code: r.Code, Reason: r.Reason, FailedAt: r.FailedAt}
+}
+
 func (r messageRecord) message() domain.Message {
+	// Records written before the status field existed read back as available,
+	// which is what they were.
+	if r.Status == "" {
+		r.Status = domain.StatusReady
+	}
+
 	return domain.Message{
 		ID:          r.MessageID,
 		UserID:      r.UserID,
 		Type:        r.MessageType,
 		TextContent: r.TextContent,
 		MediaID:     r.MediaID,
+		Status:      r.Status,
+		Failure:     r.Failure.failure(),
 		CreatedAt:   r.CreatedAt,
 		ExpiresAt:   r.ExpiresAt,
 	}
@@ -143,15 +176,20 @@ func (s *LocalMessageStore) Create(ctx context.Context, msg domain.Message) (dom
 	if err := ctx.Err(); err != nil {
 		return domain.Message{}, err
 	}
-	if err := msg.Validate(); err != nil {
-		return domain.Message{}, err
-	}
 
 	msg.CreatedAt = s.now().UTC()
 
 	msg.ExpiresAt = time.Time{}
 	if s.ttl > 0 {
 		msg.ExpiresAt = msg.CreatedAt.Add(s.ttl)
+	}
+
+	if msg.Status == "" {
+		msg.Status = domain.InitialStatus(msg.Type)
+	}
+
+	if err := msg.Validate(); err != nil {
+		return domain.Message{}, err
 	}
 
 	s.mu.Lock()
@@ -185,6 +223,95 @@ func (s *LocalMessageStore) append(msg domain.Message) error {
 	if err := s.file.Sync(); err != nil {
 		return fmt.Errorf("flush store file %s: %w", s.path, err)
 	}
+
+	return nil
+}
+
+func (s *LocalMessageStore) UpdateStatus(ctx context.Context, id string, status domain.Status, failure *domain.Failure) (domain.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.Message{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stored, ok := s.byID[id]
+	if !ok {
+		return domain.Message{}, fmt.Errorf("%w: %s", ErrMessageNotFound, id)
+	}
+
+	msg := stored
+	msg.Status = status
+	msg.Failure = failure
+
+	if failure != nil && failure.FailedAt.IsZero() {
+		stamped := *failure
+		stamped.FailedAt = s.now().UTC()
+		msg.Failure = &stamped
+	}
+
+	if err := msg.Validate(); err != nil {
+		return domain.Message{}, err
+	}
+
+	s.byID[id] = msg
+
+	if err := s.rewrite(); err != nil {
+		s.byID[id] = stored
+		return domain.Message{}, err
+	}
+
+	return msg, nil
+}
+
+func (s *LocalMessageStore) rewrite() error {
+	if s.file == nil {
+		return nil
+	}
+
+	messages := make([]domain.Message, 0, len(s.byID))
+	for _, msg := range s.byID {
+		messages = append(messages, msg)
+	}
+
+	sort.Slice(messages, func(i, j int) bool {
+		if messages[i].CreatedAt.Equal(messages[j].CreatedAt) {
+			return messages[i].ID < messages[j].ID
+		}
+		return messages[i].CreatedAt.Before(messages[j].CreatedAt)
+	})
+
+	var buf bytes.Buffer
+	for _, msg := range messages {
+		line, err := json.Marshal(newMessageRecord(msg))
+		if err != nil {
+			return fmt.Errorf("encode message %s: %w", msg.ID, err)
+		}
+		buf.Write(append(line, '\n'))
+	}
+
+	// The records are rebuilt beside the store and moved onto it in one rename,
+	// so an interrupted rewrite cannot leave a half-written store behind.
+	tmp := s.path + ".tmp"
+	defer func() { _ = os.Remove(tmp) }()
+
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("write store file %s: %w", tmp, err)
+	}
+
+	if err := s.file.Close(); err != nil {
+		return fmt.Errorf("close store file %s: %w", s.path, err)
+	}
+
+	if err := os.Rename(tmp, s.path); err != nil {
+		return fmt.Errorf("replace store file %s: %w", s.path, err)
+	}
+
+	file, err := os.OpenFile(s.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open store file %s: %w", s.path, err)
+	}
+	s.file = file
 
 	return nil
 }

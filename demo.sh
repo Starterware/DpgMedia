@@ -22,8 +22,6 @@ server_log="${workdir}/server.log"
 response="${workdir}/response.json"
 server_pid=""
 
-# Styling is dropped when stdout is not a terminal, so piping the demo into a
-# file or a pager stays readable.
 if [[ -t 1 ]]; then
 	bold=$'\033[1m'
 	dim=$'\033[2m'
@@ -72,8 +70,6 @@ step() {
 	printf '\n%s==> %s%s\n' "$bold" "$1" "$reset"
 }
 
-# request performs one call and prints both sides of it: the request line, the
-# payload when there is one, then the status code and the response body.
 request() {
 	local method="$1" path="$2" payload="${3:-}"
 	local status color
@@ -98,9 +94,26 @@ request() {
 	show <"$response"
 }
 
-send() {
-	request POST /api/v1/messages "$1"
+MEDIA_CATALOG="data/media/catalog.json"
+
+list_audio_media() {
+	if command -v jq >/dev/null 2>&1; then
+		jq -r '.[] | select(.media_type == "AUDIO") | .media_id' "$MEDIA_CATALOG"
+		return
+	fi
+
+	awk -F'"' '/"media_id"/ { id = $4 } /"media_type"/ && $4 == "AUDIO" { print id }' "$MEDIA_CATALOG"
 }
+
+audio_media_ids=()
+while IFS= read -r media_id; do
+	audio_media_ids+=("$media_id")
+done < <(list_audio_media)
+
+if [[ ${#audio_media_ids[@]} -eq 0 ]]; then
+	echo "no AUDIO media found in ${MEDIA_CATALOG}" >&2
+	exit 1
+fi
 
 section "Server"
 step "Building the server"
@@ -132,21 +145,29 @@ request GET /healthz
 
 section "Client"
 step "Sending a TEXT message"
-send '{"user_id":"usr_98765","message_type":"TEXT","text_content":"Great show this morning!"}'
+request POST  /api/v1/messages '{"user_id":"usr_98765","message_type":"TEXT","text_content":"Great show this morning!"}'
 
-step "Sending an AUDIO message"
-send '{"user_id":"usr_11223","message_type":"AUDIO","text_content":"my voice note","media_id":"med_abc890_m4a"}'
+step "Sending an AUDIO message (accepted as PENDING_TRANSCRIPTION), one of ${#audio_media_ids[@]} recordings in the catalog"
+request POST  /api/v1/messages "{\"user_id\":\"usr_11223\",\"message_type\":\"AUDIO\",\"media_id\":\"${audio_media_ids[RANDOM % ${#audio_media_ids[@]}]}\"}"
 
 step "Sending another TEXT message"
-send '{"user_id":"usr_45765","message_type":"TEXT","text_content":"Could you play my favourite song?"}'
+request POST  /api/v1/messages '{"user_id":"usr_45765","message_type":"TEXT","text_content":"Could you play my favourite song?"}'
 
 step "Rejecting an invalid message (no text_content for TEXT)"
-send '{"user_id":"usr_98765","message_type":"TEXT"}'
+request POST  /api/v1/messages  '{"user_id":"usr_98765","message_type":"TEXT"}'
 
-step "Listing every message, newest first"
+step "Rejecting an AUDIO message whose media_id is not in the catalog"
+request POST  /api/v1/messages  '{"user_id":"usr_11223","message_type":"AUDIO","media_id":"med_does_not_exist"}'
+
+step "Listing every message before the transcription job has finished"
+request GET /api/v1/messages
+
+step "Waiting for the transcription job"
+sleep 2
+
+step "Listing every message again, the audio message is now READY"
 request GET /api/v1/messages
 
 section "Server logs"
-# Stop first, so the graceful shutdown lines are in the log before it is read.
 stop_server
 cat "$server_log"

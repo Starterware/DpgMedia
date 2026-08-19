@@ -25,8 +25,12 @@ The Go server is a demonstration of the ingestion slice of the design, not the f
 | Endpoint | Description |
 | --- | --- |
 | `GET /healthz` | Liveness check. |
-| `POST /api/v1/messages` | Accepts and validates a listener message, stores it, and returns the generated `message_id`. |
+| `POST /api/v1/messages` | Accepts and validates a listener message, stores it, and returns the generated `message_id` and its `status`. |
 | `GET /api/v1/messages` | Lists stored messages, newest first, capped by the optional `limit` query parameter (default `50`, maximum `200`). |
+
+A message carrying media is only accepted when its `media_id` resolves to an entry of the media
+catalog whose type matches the message; an unknown or mismatched `media_id` is rejected before
+anything is stored.
 
 It also includes structured `slog` logging with a per-request ID, request body size limits,
 configuration via flags/environment variables, graceful shutdown, a persistent message store, and a
@@ -89,7 +93,7 @@ Invalid configuration fails fast at startup with an explanatory error and exit c
 ## Trying it out
 
 The quickest way is [`demo.sh`](demo.sh), which builds the server, starts it on a throwaway store,
-sends a few messages and lists them back:
+sends a few messages, and lists them back before and after the transcription job has run:
 
 ```bash
 ./demo.sh          # or ./demo.sh 9000 to pick a port
@@ -119,6 +123,26 @@ curl -X POST localhost:8080/api/v1/messages \
 {
   "data": {
     "message_id": "msg_36f05099-e55c-4df1-b266-1adbed8bcd67",
+    "status": "READY",
+    "created_at": "2026-08-17T14:54:49Z"
+  }
+}
+```
+
+Send an audio message, using a `media_id` from
+[`data/media/catalog.json`](data/media/catalog.json):
+
+```bash
+curl -X POST localhost:8080/api/v1/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id":"usr_98765","message_type":"AUDIO","media_id":"med_ac16e652-9c2c-49f7-8546-a03e607a3d85"}'
+```
+
+```json
+{
+  "data": {
+    "message_id": "msg_d32b7363-5593-4b38-91bd-c31dd92ba353",
+    "status": "PENDING_TRANSCRIPTION",
     "created_at": "2026-08-17T14:54:49Z"
   }
 }
@@ -139,6 +163,7 @@ curl 'localhost:8080/api/v1/messages?limit=2'
         "user_id": "usr_98765",
         "message_type": "TEXT",
         "text_content": "hello",
+        "status": "READY",
         "created_at": "2026-08-17T14:54:49Z",
         "expires_at": "2026-08-24T14:54:49Z"
       }
@@ -207,13 +232,15 @@ The code is a slice of the design, deliberately kept small. Compared to `DESIGN.
   `Get` is used by the store's own tests only.
 * **No media upload path.** `POST /api/v1/media/upload-url` and the presigned direct-to-object-storage
   upload do not exist. The media catalog is a static file that can only be read, so the assets it
-  lists are the only ones that exist. Nothing resolves a `media_id` yet either: on a message it is
-  still accepted as an opaque string, and neither its existence in the catalog nor its ownership is
-  verified.
+  lists are the only ones a `media_id` can point at. A message is checked against that catalog, but
+  the ownership of the media is not verified.
 * **No authentication.** There is no token validation against the User Database / Identity Provider;
   `user_id` is taken from the request body and trusted as-is. Do not expose this server publicly.
-* **No asynchronous pipeline.** No event bus, no Speech-to-Text worker, no AI summary aggregator —
-  nothing is processed after a message is accepted.
+* **No real transcription pipeline.** The transcription job is a stand-in: it sleeps instead of
+  calling a speech recognition model and stores no transcript, only the resulting status. There is no
+  event bus and no AI summary aggregator, the job queue is a goroutine per message rather than a
+  worker pool with a bounded queue, and nothing retries a `FAILED_TRANSCRIPTION` message or picks up
+  the jobs lost when the process dies mid-flight.
 * **No real-time delivery.** No Redis Pub/Sub, no WebSocket gateway and no DJ dashboard; accepted
   messages are not pushed anywhere.
 * **No station/show context.** Messages carry no `station_id` or `show_id`, so they cannot be routed

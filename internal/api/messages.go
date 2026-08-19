@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/mikael/dpgmedia/internal/domain"
 	"github.com/mikael/dpgmedia/internal/store"
+	"github.com/mikael/dpgmedia/internal/transcription"
 )
 
 type createMessageRequest struct {
@@ -23,13 +25,16 @@ type createMessageRequest struct {
 }
 
 type createMessageData struct {
-	MessageID string `json:"message_id"`
-	CreatedAt string `json:"created_at"`
+	MessageID string        `json:"message_id"`
+	Status    domain.Status `json:"status"`
+	CreatedAt string        `json:"created_at"`
 }
 
 type createMessageHandler struct {
 	maxBodyBytes int64
-	store        store.MessageStore
+	messages     store.MessageStore
+	media        store.MediaStore
+	transcriber  transcription.Transcriber
 }
 
 func (h *createMessageHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +58,26 @@ func (h *createMessageHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	msg, err := h.store.Create(ctx, domain.Message{
+	item, mediaErrs, err := h.checkMedia(ctx, req)
+	if err != nil {
+		logger.Error("failed to read media catalog",
+			slog.String("media_id", req.MediaID),
+			slog.Any("error", err),
+		)
+		writeError(ctx, w, errInternal, nil)
+		return
+	}
+	if len(mediaErrs) > 0 {
+		logger.Warn("rejected message payload",
+			slog.String("user_id", req.UserID),
+			slog.String("media_id", req.MediaID),
+			slog.Any("details", mediaErrs),
+		)
+		writeError(ctx, w, errValidation, mediaErrs)
+		return
+	}
+
+	msg, err := h.messages.Create(ctx, domain.Message{
 		ID:          domain.NewMessageID(),
 		UserID:      req.UserID,
 		Type:        req.MessageType,
@@ -76,13 +100,43 @@ func (h *createMessageHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		slog.String("message_type", string(msg.Type)),
 		slog.String("media_id", msg.MediaID),
 		slog.Int("text_length", len(msg.TextContent)),
+		slog.String("status", string(msg.Status)),
 		slog.Time("expires_at", msg.ExpiresAt),
 	)
 
+	if msg.Status == domain.StatusPendingTranscription {
+		h.transcriber.Enqueue(msg.ID, item.URI)
+	}
+
 	writeSuccess(ctx, w, http.StatusCreated, createMessageData{
 		MessageID: msg.ID,
+		Status:    msg.Status,
 		CreatedAt: msg.CreatedAt.Format(time.RFC3339),
 	})
+}
+
+func (h *createMessageHandler) checkMedia(ctx context.Context, req createMessageRequest) (domain.Media, details, error) {
+	if !req.MessageType.RequiresMedia() {
+		return domain.Media{}, nil, nil
+	}
+
+	var errs details
+
+	item, err := h.media.Get(ctx, req.MediaID)
+	if err != nil {
+		if !errors.Is(err, store.ErrMediaNotFound) {
+			return domain.Media{}, nil, err
+		}
+		errs.add("media_id", issueNotFound, fmt.Sprintf("No media found for id %q", req.MediaID))
+		return domain.Media{}, errs, nil
+	}
+
+	if item.Type != req.MessageType {
+		errs.add("media_id", issueInvalid,
+			fmt.Sprintf("Media %q is %s, not %s", req.MediaID, item.Type, req.MessageType))
+	}
+
+	return item, errs, nil
 }
 
 func (h *createMessageHandler) decode(w http.ResponseWriter, r *http.Request) (createMessageRequest, details) {
@@ -130,13 +184,32 @@ const (
 )
 
 type messageData struct {
-	MessageID   string      `json:"message_id"`
-	UserID      string      `json:"user_id"`
-	MessageType domain.Type `json:"message_type"`
-	TextContent string      `json:"text_content,omitempty"`
-	MediaID     string      `json:"media_id,omitempty"`
-	CreatedAt   string      `json:"created_at"`
-	ExpiresAt   string      `json:"expires_at,omitempty"`
+	MessageID   string        `json:"message_id"`
+	UserID      string        `json:"user_id"`
+	MessageType domain.Type   `json:"message_type"`
+	TextContent string        `json:"text_content,omitempty"`
+	MediaID     string        `json:"media_id,omitempty"`
+	Status      domain.Status `json:"status"`
+	Failure     *failureData  `json:"failure,omitempty"`
+	CreatedAt   string        `json:"created_at"`
+	ExpiresAt   string        `json:"expires_at,omitempty"`
+}
+
+type failureData struct {
+	Code     domain.FailureCode `json:"code"`
+	Reason   string             `json:"reason"`
+	FailedAt string             `json:"failed_at"`
+}
+
+func newFailureData(failure *domain.Failure) *failureData {
+	if failure == nil {
+		return nil
+	}
+	return &failureData{
+		Code:     failure.Code,
+		Reason:   failure.Reason,
+		FailedAt: failure.FailedAt.Format(time.RFC3339),
+	}
 }
 
 func newMessageData(msg domain.Message) messageData {
@@ -146,6 +219,8 @@ func newMessageData(msg domain.Message) messageData {
 		MessageType: msg.Type,
 		TextContent: msg.TextContent,
 		MediaID:     msg.MediaID,
+		Status:      msg.Status,
+		Failure:     newFailureData(msg.Failure),
 		CreatedAt:   msg.CreatedAt.Format(time.RFC3339),
 	}
 	if !msg.ExpiresAt.IsZero() {
@@ -165,7 +240,7 @@ type listMeta struct {
 }
 
 type listMessagesHandler struct {
-	store store.MessageStore
+	messages store.MessageStore
 }
 
 func (h *listMessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -179,7 +254,7 @@ func (h *listMessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	messages, err := h.store.List(ctx, limit)
+	messages, err := h.messages.List(ctx, limit)
 	if err != nil {
 		logger.Error("failed to list messages", slog.Int("limit", limit), slog.Any("error", err))
 		writeError(ctx, w, errInternal, nil)

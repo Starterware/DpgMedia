@@ -35,6 +35,7 @@ type issueCode string
 const (
 	issueRequired    issueCode = "REQUIRED"
 	issueNotAllowed  issueCode = "NOT_ALLOWED"
+	issueNotFound    issueCode = "NOT_FOUND"
 	issueInvalid     issueCode = "INVALID_VALUE"
 	issueMalformed   issueCode = "MALFORMED"
 	issueEmpty       issueCode = "EMPTY"

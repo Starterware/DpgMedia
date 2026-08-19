@@ -107,7 +107,7 @@ func TestStatusRecorder(t *testing.T) {
 func TestRequestIDIsUUID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
-	newTestRouter().ServeHTTP(rec, req)
+	newTestRouter(t).ServeHTTP(rec, req)
 
 	got := rec.Header().Get("X-Request-Id")
 	require.NotEmpty(t, got, "handler must echo a request id")
@@ -124,7 +124,7 @@ func TestRequestIDIsUnique(t *testing.T) {
 
 	for range runs {
 		rec := httptest.NewRecorder()
-		newTestRouter().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		newTestRouter(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 		id := rec.Header().Get("X-Request-Id")
 		_, dup := seen[id]
@@ -147,7 +147,7 @@ func TestRequestIDFromClientIsPreserved(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 			req.Header.Set("X-Request-Id", tc.sent)
 			rec := httptest.NewRecorder()
-			newTestRouter().ServeHTTP(rec, req)
+			newTestRouter(t).ServeHTTP(rec, req)
 
 			assert.Equal(t, tc.sent, rec.Header().Get("X-Request-Id"))
 		})

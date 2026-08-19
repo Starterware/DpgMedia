@@ -14,6 +14,7 @@ func TestValidate(t *testing.T) {
 		UserID:      "usr_98765",
 		Type:        TypeText,
 		TextContent: "hello",
+		Status:      StatusReady,
 	}
 
 	tests := []struct {
@@ -51,6 +52,39 @@ func TestValidate(t *testing.T) {
 			name:    "empty type",
 			mutate:  func(m *Message) { m.Type = "" },
 			wantMsg: `unknown type ""`,
+		},
+		{
+			name:    "unknown status",
+			mutate:  func(m *Message) { m.Status = Status("DELETED") },
+			wantMsg: `unknown status "DELETED"`,
+		},
+		{
+			name:    "empty status",
+			mutate:  func(m *Message) { m.Status = "" },
+			wantMsg: `unknown status ""`,
+		},
+		{
+			name:   "pending transcription",
+			mutate: func(m *Message) { m.Type, m.Status = TypeAudio, StatusPendingTranscription },
+		},
+		{
+			name: "failed with a failure",
+			mutate: func(m *Message) {
+				m.Type, m.Status = TypeAudio, StatusFailedTranscription
+				m.Failure = &Failure{Code: FailureMediaUnavailable, Reason: "media not found"}
+			},
+		},
+		{
+			name:    "failed without a failure",
+			mutate:  func(m *Message) { m.Status = StatusFailedTranscription },
+			wantMsg: "failure is required for status FAILED_TRANSCRIPTION",
+		},
+		{
+			name: "failure on a message that did not fail",
+			mutate: func(m *Message) {
+				m.Failure = &Failure{Code: FailureMediaUnavailable, Reason: "media not found"}
+			},
+			wantMsg: "failure is not allowed for status READY",
 		},
 	}
 
@@ -93,4 +127,20 @@ func TestExpired(t *testing.T) {
 			assert.Equal(t, tc.want, Message{ExpiresAt: tc.expiresAt}.Expired(now))
 		})
 	}
+}
+
+func TestValidateRejectsAnInvalidFailure(t *testing.T) {
+	msg := Message{
+		ID:      "msg_1",
+		UserID:  "usr_98765",
+		Type:    TypeAudio,
+		MediaID: "med_1",
+		Status:  StatusFailedTranscription,
+		Failure: &Failure{Code: FailureMediaUnavailable},
+	}
+
+	err := msg.Validate()
+
+	require.ErrorIs(t, err, ErrInvalidFailure, "the message reports why its failure is unusable")
+	assert.Contains(t, err.Error(), "reason is required")
 }
